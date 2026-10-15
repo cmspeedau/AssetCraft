@@ -4,6 +4,13 @@ This document tracks where AssetCraft is going and in what order. It is a
 working plan, not a contract: dates are deliberately omitted, and sequencing can
 change as we learn. See [README.md](README.md) for what the project is.
 
+## Current status
+
+- **M0 — Foundations:** complete.
+- **M1 — Catalog & Auth:** in progress. Public catalog reads, sign-in, and the
+  token store are in; the response cache and the authenticated library and
+  download endpoints are next.
+
 ## Vision
 
 A fast, dependable, cross-platform tool that makes a photogrammetry asset
@@ -33,15 +40,15 @@ milestone is complete only when its DoD is fully checked.
 
 Stand up the workspace so contributors can build, test, and trust the toolchain.
 
-- [ ] Cargo workspace with all crates from the README architecture section
+- [x] Cargo workspace with all crates from the README architecture section
       scaffolded (compiling stubs are fine).
-- [ ] `rust-toolchain.toml` pinning a stable toolchain.
-- [ ] CI: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test` on
+- [x] `rust-toolchain.toml` pinning a stable toolchain.
+- [x] CI: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test` on
       Windows, macOS, and Linux.
-- [ ] `assetcraft-core`: domain model skeleton, shared `Error` type, config
+- [x] `assetcraft-core`: domain model skeleton, shared `Error` type, config
       loading, and structured logging (`tracing`).
-- [ ] Dual license files present (`LICENSE-APACHE`, `LICENSE-MIT`).
-- [ ] `docs/architecture.md` describing the crate graph and data flow.
+- [x] Dual license files present (`LICENSE-APACHE`, `LICENSE-MIT`).
+- [x] `docs/architecture.md` describing the crate graph and data flow.
 
 **DoD:** `cargo build --workspace` and `cargo test --workspace` pass on all three
 platforms in CI.

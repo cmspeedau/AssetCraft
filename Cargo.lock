@@ -146,6 +146,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "assetcraft-dcc-blender"
+version = "0.1.0"
+dependencies = [
+ "assetcraft-core",
+]
+
+[[package]]
+name = "assetcraft-download"
+version = "0.1.0"
+dependencies = [
+ "assetcraft-core",
+ "serde",
+]
+
+[[package]]
+name = "assetcraft-gui"
+version = "0.1.0"
+
+[[package]]
+name = "assetcraft-library"
+version = "0.1.0"
+dependencies = [
+ "assetcraft-core",
+]
+
+[[package]]
 name = "async-compression"
 version = "0.4.50"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -11,6 +11,8 @@
 //!   retries transient failures with exponential backoff, verifies the result
 //!   against an expected size and SHA-256, and only renames the file into place
 //!   once it verifies.
+//! - **[`BandwidthLimit`]**, an aggregate throughput cap shared by every
+//!   transfer a [`Downloader`] runs.
 //! - **[`DownloadQueue`]**, an ordered, de-duplicating queue of
 //!   [`DownloadRequest`]s that can be persisted between runs.
 //!
@@ -20,8 +22,10 @@
 //! validated against a manifest from a real signed-in account. It is tracked as
 //! the next download-engine task in ROADMAP.md rather than guessed at here.
 
+pub mod bandwidth;
 pub mod engine;
 pub mod queue;
 
+pub use bandwidth::{BandwidthLimit, BandwidthLimiter};
 pub use engine::{DownloadFile, DownloadOptions, DownloadOutcome, Downloader, Progress};
 pub use queue::{DownloadQueue, DownloadRequest};

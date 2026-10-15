@@ -11,7 +11,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use assetcraft_auth::{ensure_fresh_token, EpicAuth, FileTokenStore, TokenStore};
 use assetcraft_catalog::{FabClient, ResponseCache, DEFAULT_TTL};
 use assetcraft_core::{AssetSummary, Config, LibraryItem, Page, SearchQuery, SortOrder};
-use assetcraft_download::{DownloadFile, DownloadOptions, Downloader};
+use assetcraft_download::{BandwidthLimit, DownloadFile, DownloadOptions, Downloader};
 use assetcraft_library::Library;
 
 /// Browse and download Megascans / Fab assets.
@@ -142,6 +142,10 @@ struct FetchArgs {
     /// Total attempts per file, including the first.
     #[arg(long, default_value_t = 3)]
     attempts: u32,
+
+    /// Cap the download rate, e.g. `500k` or `2M` (bytes per second).
+    #[arg(long, value_parser = parse_rate)]
+    limit: Option<u64>,
 }
 
 #[derive(Debug, Args)]
@@ -328,6 +332,7 @@ async fn library(config: &Config, args: LibraryArgs) -> Result<()> {
 async fn fetch(args: FetchArgs) -> Result<()> {
     let options = DownloadOptions {
         max_attempts: args.attempts,
+        bandwidth: args.limit.map(BandwidthLimit::new),
         ..Default::default()
     };
     let downloader = Downloader::with_default_client(options)?;
@@ -358,6 +363,24 @@ async fn fetch(args: FetchArgs) -> Result<()> {
         println!("Succeeded on attempt {}.", outcome.attempts);
     }
     Ok(())
+}
+
+/// Parse a bandwidth rate such as `500k`, `2M`, or a plain byte count.
+fn parse_rate(raw: &str) -> Result<u64, String> {
+    let raw = raw.trim();
+    let (number, multiplier) = match raw.chars().last() {
+        Some('k' | 'K') => (&raw[..raw.len() - 1], 1_000u64),
+        Some('m' | 'M') => (&raw[..raw.len() - 1], 1_000_000),
+        Some('g' | 'G') => (&raw[..raw.len() - 1], 1_000_000_000),
+        _ => (raw, 1),
+    };
+    number
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(multiplier))
+        .filter(|n| *n > 0)
+        .ok_or_else(|| format!("`{raw}` is not a rate like `500k` or `2M`"))
 }
 
 async fn taxonomy(config: &Config, args: TaxonomyArgs) -> Result<()> {
@@ -448,5 +471,27 @@ fn print_library_items(items: &[LibraryItem]) {
             println!("  categories: {}", categories.join(", "));
         }
         println!();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_rate_understands_suffixes() {
+        assert_eq!(parse_rate("512").unwrap(), 512);
+        assert_eq!(parse_rate("500k").unwrap(), 500_000);
+        assert_eq!(parse_rate("2M").unwrap(), 2_000_000);
+        assert_eq!(parse_rate("1g").unwrap(), 1_000_000_000);
+        assert_eq!(parse_rate(" 10 K ").unwrap(), 10_000);
+    }
+
+    #[test]
+    fn parse_rate_rejects_nonsense() {
+        assert!(parse_rate("").is_err());
+        assert!(parse_rate("fast").is_err());
+        assert!(parse_rate("0").is_err());
+        assert!(parse_rate("-5k").is_err());
     }
 }

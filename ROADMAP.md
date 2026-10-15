@@ -11,8 +11,9 @@ change as we learn. See [README.md](README.md) for what the project is.
   storage and refresh, the response cache, and the authenticated library and
   download-info endpoints are in. The OS keyring backend remains.
 - **M2 — Download Engine:** in progress. The transport engine (bounded
-  concurrency, resumption, retries, integrity verification) and the persistent
-  queue are in; resolving an asset into files needs the binary manifest parser.
+  concurrency, resumption, retries, integrity verification, a global bandwidth
+  limit) and the persistent queue are in; resolving an asset into files needs
+  the binary manifest parser.
 - **M3 — Library:** in progress. A SQLite library backs offline browse, search,
   and an integrity check; thumbnails and re-export from the library remain.
 
@@ -104,7 +105,7 @@ Get bytes on disk, reliably.
 - [ ] Resolve an owned asset into the files to fetch: parse Fab's signed binary
       artifact manifest (Epic's chunked manifest format, magic `0x44BEC00C`).
 - [ ] Quality-tier and format selection per asset.
-- [ ] Global bandwidth limit.
+- [x] Global bandwidth limit.
 
 > **Ordering note.** The transport engine and the manifest parser were split.
 > The engine can be proven correct with tests against a local server; the

@@ -116,6 +116,9 @@ per file: attempt loop (up to `max_attempts`)
         ├─ other non-2xx    ──▶ fail immediately
         │
         ▼
+per chunk: BandwidthLimiter::acquire(len)  (one limiter shared by the batch)
+        │
+        ▼
 verify size and SHA-256 ──▶ rename .part → destination (atomic)
 ```
 
@@ -124,6 +127,10 @@ destination is never half-written, and a `.part` file is always a *prefix* of
 the target, which is what makes resuming sound. A checksum mismatch deletes the
 part file, because a corrupt file that survives would be resumed from and
 reported as complete.
+
+When `DownloadOptions::bandwidth` is set, the byte budget is shared by every
+transfer in the batch rather than applied per file, so the cap is on the engine:
+ten concurrent transfers still total the limit.
 
 What is missing from the flow is the step before it: turning an owned asset into
 a `DownloadFile` list. Fab returns that as a signed **binary** manifest (Epic's
@@ -205,6 +212,17 @@ be proven correct here, with tests, against a local server. So the engine is
 built and tested first, and asset resolution is added when it can be validated
 against real data. Shipping a binary parser validated only by its own writer
 would be a claim we could not stand behind.
+
+### The bandwidth limit is a token bucket that may go into debt
+
+A rate limiter has to hold the *aggregate* rate when several transfers run at
+once, and the obvious design — sleep until the bucket has room, then take the
+bytes — lets every waiter wake at the same moment and burst past the limit. So a
+reservation is taken *before* the wait: the balance is allowed to go negative,
+and the caller sleeps for however long that debt takes to clear at the rate. The
+next caller sees the debt and waits longer, which serialises the throughput
+without a lock held across the sleep. Capping refills at the burst size only
+limits the positive side, so an idle period cannot bank throughput it never had.
 
 ### The library stores an item as JSON, with one denormalised column
 

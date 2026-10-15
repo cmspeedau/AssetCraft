@@ -167,6 +167,9 @@ assetcraft library --verify
 
 # Fetch a single file, resuming and verifying as it goes
 assetcraft fetch https://example.com/asset.zip --output asset.zip --sha256 <hash>
+
+# Cap the download rate (bytes per second; `k`/`M` suffixes are accepted)
+assetcraft fetch https://example.com/asset.zip --output asset.zip --limit 2M
 ```
 
 Still to come (see [ROADMAP.md](ROADMAP.md)):

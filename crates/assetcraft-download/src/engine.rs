@@ -22,6 +22,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
+use crate::bandwidth::{BandwidthLimit, BandwidthLimiter};
+
 /// One file to fetch.
 ///
 /// `size` and `sha256` are optional because not every source advertises them;
@@ -78,6 +80,8 @@ pub struct DownloadOptions {
     pub max_backoff: Duration,
     /// Whether to check the size and checksum of the finished file.
     pub verify: bool,
+    /// Aggregate throughput cap shared by every transfer, when set.
+    pub bandwidth: Option<BandwidthLimit>,
 }
 
 impl Default for DownloadOptions {
@@ -88,6 +92,7 @@ impl Default for DownloadOptions {
             base_backoff: Duration::from_millis(500),
             max_backoff: Duration::from_secs(30),
             verify: true,
+            bandwidth: None,
         }
     }
 }
@@ -139,12 +144,20 @@ pub struct DownloadOutcome {
 pub struct Downloader {
     http: reqwest::Client,
     options: DownloadOptions,
+    /// Built once from `options.bandwidth` and cloned by every task, so the
+    /// limit is shared across a transfer batch rather than applied per file.
+    bandwidth: Option<Arc<BandwidthLimiter>>,
 }
 
 impl Downloader {
     /// Build a downloader over an existing HTTP client.
     pub fn new(http: reqwest::Client, options: DownloadOptions) -> Self {
-        Self { http, options }
+        let bandwidth = options.bandwidth.map(BandwidthLimiter::new).map(Arc::new);
+        Self {
+            http,
+            options,
+            bandwidth,
+        }
     }
 
     /// Build a downloader with a default HTTP client, which caps connection
@@ -164,7 +177,16 @@ impl Downloader {
     /// Fetch one file.
     pub async fn download(&self, file: &DownloadFile) -> Result<DownloadOutcome> {
         let progress: ProgressReporter = Arc::new(|_| {});
-        fetch_one(&self.http, &self.options, file, 0, 1, &progress).await
+        fetch_one(
+            &self.http,
+            &self.options,
+            file,
+            0,
+            1,
+            &progress,
+            self.bandwidth.as_ref(),
+        )
+        .await
     }
 
     /// Fetch several files with at most `concurrency` transfers in flight.
@@ -195,6 +217,7 @@ impl Downloader {
             let progress = Arc::clone(&progress);
             let http = self.http.clone();
             let options = self.options.clone();
+            let bandwidth = self.bandwidth.clone();
             tasks.spawn(async move {
                 // The permit is held for the whole transfer, which is what
                 // bounds the number of concurrent downloads.
@@ -202,7 +225,16 @@ impl Downloader {
                     .acquire_owned()
                     .await
                     .expect("download semaphore is never closed");
-                let result = fetch_one(&http, &options, &file, index, total, &progress).await;
+                let result = fetch_one(
+                    &http,
+                    &options,
+                    &file,
+                    index,
+                    total,
+                    &progress,
+                    bandwidth.as_ref(),
+                )
+                .await;
                 (index, result)
             });
         }
@@ -262,6 +294,7 @@ async fn fetch_one(
     index: usize,
     total: usize,
     progress: &ProgressReporter,
+    bandwidth: Option<&Arc<BandwidthLimiter>>,
 ) -> Result<DownloadOutcome> {
     let destination = file.destination.clone();
     if let Some(parent) = destination.parent() {
@@ -283,6 +316,7 @@ async fn fetch_one(
             total,
             attempt,
             progress,
+            bandwidth,
         )
         .await
         {
@@ -323,6 +357,7 @@ async fn attempt_once(
     total: usize,
     attempt: u32,
     progress: &ProgressReporter,
+    bandwidth: Option<&Arc<BandwidthLimiter>>,
 ) -> std::result::Result<DownloadOutcome, AttemptError> {
     let mut existing = tokio::fs::metadata(part)
         .await
@@ -429,6 +464,11 @@ async fn attempt_once(
         .await
         .map_err(|err| AttemptError::transient(Error::from(err)))?
     {
+        // Pay for the bytes before writing them, so the transfer never runs
+        // ahead of the budget even if the source sends a large burst.
+        if let Some(limiter) = bandwidth {
+            limiter.acquire(chunk.len() as u64).await;
+        }
         handle
             .write_all(&chunk)
             .await
@@ -961,5 +1001,84 @@ mod tests {
             .await
             .unwrap();
         assert!(outcomes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_bandwidth_limit_throttles_the_transfer() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/asset.bin");
+                then.status(200).body("hello world");
+            })
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("asset.bin");
+        let file = DownloadFile::new(format!("{}/asset.bin", server.base_url()), &destination);
+
+        // 11 bytes at 100 B/s is ~110 ms once the 1-byte burst is spent. The
+        // assertion is a lower bound, so a slow machine cannot make it fail.
+        let options = DownloadOptions {
+            bandwidth: Some(BandwidthLimit::new(100).with_burst(1)),
+            ..fast_options()
+        };
+        let start = std::time::Instant::now();
+        let outcome = downloader(options).download(&file).await.unwrap();
+
+        assert_eq!(outcome.bytes, 11);
+        assert_eq!(
+            std::fs::read_to_string(&destination).unwrap(),
+            "hello world"
+        );
+        assert!(
+            start.elapsed() >= Duration::from_millis(60),
+            "the limit was not applied: finished in {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bandwidth_limit_is_shared_across_a_batch() {
+        let server = MockServer::start_async().await;
+        for (path, body) in [("/a.bin", "aaaa"), ("/b.bin", "bbbb")] {
+            server
+                .mock_async(move |when, then| {
+                    when.method(GET).path(path);
+                    then.status(200).body(body);
+                })
+                .await;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let files: Vec<DownloadFile> = ["a", "b"]
+            .iter()
+            .map(|name| {
+                DownloadFile::new(
+                    format!("{}/{name}.bin", server.base_url()),
+                    dir.path().join(format!("{name}.bin")),
+                )
+                .with_size(4)
+            })
+            .collect();
+
+        // Two 4-byte files at 100 B/s is ~80 ms of debt shared by the batch.
+        let options = DownloadOptions {
+            concurrency: 2,
+            bandwidth: Some(BandwidthLimit::new(100).with_burst(1)),
+            ..fast_options()
+        };
+        let start = std::time::Instant::now();
+        let outcomes = downloader(options)
+            .download_all(files, |_| {})
+            .await
+            .unwrap();
+
+        assert_eq!(outcomes.len(), 2);
+        assert!(
+            start.elapsed() >= Duration::from_millis(60),
+            "the batch did not share the limit: finished in {:?}",
+            start.elapsed()
+        );
     }
 }

@@ -195,6 +195,20 @@ impl FabClient {
             .collect())
     }
 
+    /// Fetch raw bytes from an absolute URL, such as a thumbnail on Fab's media
+    /// CDN. The bytes are not cached here; callers decide where media lives.
+    pub async fn fetch_bytes(&self, url: &str) -> Result<Vec<u8>> {
+        let url = Url::parse(url)
+            .map_err(|err| Error::Config(format!("invalid media URL {url:?}: {err}")))?;
+        let response = self.http.get(url).send().await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(status_error(status, &body));
+        }
+        Ok(response.bytes().await?.to_vec())
+    }
+
     /// Build the search URL for a query. Exposed so the mapping from
     /// [`SearchQuery`] to Fab's query parameters can be tested without a
     /// network round-trip.
@@ -648,6 +662,45 @@ mod tests {
         manifest.assert_async().await;
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].artifact_id, "art-1");
+    }
+
+    #[tokio::test]
+    async fn fetch_bytes_returns_a_media_body() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/rock.png");
+                then.status(200).body(b"\x89PNG\r\n");
+            })
+            .await;
+
+        let client = client_for(&server);
+        let bytes = client
+            .fetch_bytes(&format!("{}/rock.png", server.base_url()))
+            .await
+            .unwrap();
+        assert_eq!(bytes, b"\x89PNG\r\n");
+    }
+
+    #[tokio::test]
+    async fn fetch_bytes_surfaces_a_non_success_status() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method(GET).path("/missing.png");
+                then.status(404).body("gone");
+            })
+            .await;
+
+        let client = client_for(&server);
+        let err = client
+            .fetch_bytes(&format!("{}/missing.png", server.base_url()))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::HttpStatus { status: 404, .. }),
+            "got {err:?}"
+        );
     }
 
     #[tokio::test]

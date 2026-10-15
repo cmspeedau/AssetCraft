@@ -154,6 +154,11 @@ assetcraft library                    ──▶ fetch every page from /e/account
               assetcraft library --verify  ──┴── read every item back and report what fails
 ```
 
+Media is cached beside the index, not inside it. `assetcraft library
+--thumbnails` fetches each item's thumbnail through the catalog client and
+stores it in a content-addressed `MediaCache`, so offline browsing points at a
+local file rather than a URL.
+
 ## Decisions
 
 ### We own the catalog client rather than wrapping `egs-api`
@@ -235,6 +240,16 @@ JSON path as cheaply.
 
 Search uses `instr(lower(title), …)` rather than `LIKE`, so a query containing
 `%` or `_` matches those characters literally instead of acting as a wildcard.
+
+### Cached media is content-addressed by URL, with the URL kept alongside
+
+The thumbnail cache names each image after a hash of its URL, so re-caching an
+item is a no-op and two items that share a preview share one file. A hash alone
+could in principle collide, so each image has a sibling `<key>.url` file holding
+the source URL; a read whose stored URL does not match the requested one is a
+miss rather than the wrong picture. The sidecar is written after the image, so a
+half-finished entry is simply refetched. The image itself stays a valid file on
+disk, which keeps the cache browsable without the tool.
 
 ## Endpoint reference
 

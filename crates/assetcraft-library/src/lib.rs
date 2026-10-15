@@ -9,11 +9,19 @@
 //! model never silently loses a field: what was written comes back, or the row
 //! is reported by [`Library::verify`]. The denormalised title is derived data,
 //! rebuilt only on insert.
+//!
+//! Beside the index sits [`MediaCache`], a content-addressed store for the
+//! thumbnails and previews that make offline browsing useful. It holds bytes
+//! only; fetching them is the caller's job.
 
 use std::path::Path;
 
 use assetcraft_core::{AssetId, Error, LibraryItem, Result};
 use rusqlite::Connection;
+
+pub mod media;
+
+pub use media::MediaCache;
 
 /// The schema, applied on every open so an existing library is upgraded in
 /// place and a new one is created.

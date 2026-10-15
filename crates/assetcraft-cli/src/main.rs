@@ -12,7 +12,7 @@ use assetcraft_auth::{ensure_fresh_token, EpicAuth, FileTokenStore, TokenStore};
 use assetcraft_catalog::{FabClient, ResponseCache, DEFAULT_TTL};
 use assetcraft_core::{AssetSummary, Config, LibraryItem, Page, SearchQuery, SortOrder};
 use assetcraft_download::{BandwidthLimit, DownloadFile, DownloadOptions, Downloader};
-use assetcraft_library::Library;
+use assetcraft_library::{Library, MediaCache};
 
 /// Browse and download Megascans / Fab assets.
 #[derive(Debug, Parser)]
@@ -116,6 +116,10 @@ struct LibraryArgs {
     /// Check the local library for unreadable entries and exit.
     #[arg(long)]
     verify: bool,
+
+    /// Cache thumbnails for the local library so it browses offline.
+    #[arg(long)]
+    thumbnails: bool,
 
     /// Print JSON instead of a summary.
     #[arg(long)]
@@ -242,6 +246,7 @@ async fn login(config: &Config, args: LoginArgs) -> Result<()> {
 async fn library(config: &Config, args: LibraryArgs) -> Result<()> {
     let library =
         Library::open(config.paths.library_file()).context("could not open the local library")?;
+    let media = MediaCache::new(config.paths.thumbnail_cache_dir());
 
     if args.verify {
         let report = library.verify().context("could not check the library")?;
@@ -260,12 +265,16 @@ async fn library(config: &Config, args: LibraryArgs) -> Result<()> {
         anyhow::bail!("the local library has unreadable entries");
     }
 
+    if args.thumbnails {
+        return cache_thumbnails(config, &library, &media).await;
+    }
+
     if let Some(needle) = args.search.as_deref() {
         let items = library.search(needle).context("search failed")?;
         if args.json {
             println!("{}", serde_json::to_string_pretty(&items)?);
         } else {
-            print_library_items(&items);
+            print_library_items(&items, &media);
         }
         return Ok(());
     }
@@ -275,7 +284,7 @@ async fn library(config: &Config, args: LibraryArgs) -> Result<()> {
         if args.json {
             println!("{}", serde_json::to_string_pretty(&items)?);
         } else {
-            print_library_items(&items);
+            print_library_items(&items, &media);
         }
         return Ok(());
     }
@@ -324,8 +333,48 @@ async fn library(config: &Config, args: LibraryArgs) -> Result<()> {
     if args.json {
         println!("{}", serde_json::to_string_pretty(&items)?);
     } else {
-        print_library_items(&items);
+        print_library_items(&items, &media);
     }
+    Ok(())
+}
+
+/// Cache the thumbnail of every library item that has one.
+async fn cache_thumbnails(config: &Config, library: &Library, media: &MediaCache) -> Result<()> {
+    let client = FabClient::from_config(config)?;
+    let items = library.list_all().context("could not read the library")?;
+
+    let mut cached = 0usize;
+    let mut already = 0usize;
+    let mut without = 0usize;
+    let mut failed = 0usize;
+
+    for item in &items {
+        let Some(url) = item.thumbnail_url() else {
+            without += 1;
+            continue;
+        };
+        if media.contains(url) {
+            already += 1;
+            continue;
+        }
+        match client.fetch_bytes(url).await {
+            Ok(bytes) => {
+                media
+                    .put(url, &bytes)
+                    .context("could not store a thumbnail")?;
+                cached += 1;
+            }
+            Err(err) => {
+                failed += 1;
+                eprintln!("  {}: {err}", item.asset_id);
+            }
+        }
+    }
+
+    println!(
+        "Cached {cached} thumbnails ({already} already cached, {without} without one, {failed} failed)."
+    );
+    println!("Cache: {}", media.root().display());
     Ok(())
 }
 
@@ -445,7 +494,7 @@ fn print_page(page: &Page<AssetSummary>) {
     }
 }
 
-fn print_library_items(items: &[LibraryItem]) {
+fn print_library_items(items: &[LibraryItem], media: &MediaCache) {
     println!("{} assets in your library\n", items.len());
 
     for item in items {
@@ -461,6 +510,12 @@ fn print_library_items(items: &[LibraryItem]) {
         }
         if let Some(url) = item.url.as_deref() {
             println!("  url: {url}");
+        }
+        if let Some(url) = item.thumbnail_url() {
+            match media.cached_path(url) {
+                Some(path) => println!("  thumbnail: {} (cached)", path.display()),
+                None => println!("  thumbnail: {url}"),
+            }
         }
         let categories: Vec<&str> = item
             .categories

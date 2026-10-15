@@ -15,7 +15,8 @@ change as we learn. See [README.md](README.md) for what the project is.
   limit) and the persistent queue are in; resolving an asset into files needs
   the binary manifest parser.
 - **M3 — Library:** in progress. A SQLite library backs offline browse, search,
-  and an integrity check; thumbnails and re-export from the library remain.
+  an integrity check, and a thumbnail cache; re-export from the library
+  remains.
 
 ## Vision
 
@@ -124,7 +125,7 @@ Own what you have, even offline.
 - [x] Offline browse of cached metadata (`assetcraft library --offline`,
       `assetcraft library --search <text>`).
 - [x] Library integrity check (`assetcraft library --verify`).
-- [ ] Thumbnail and preview cache.
+- [x] Thumbnail and preview cache (`assetcraft library --thumbnails`).
 - [ ] Re-download and re-export straight from the library (needs M2 asset
       resolution and the M4 exporter).
 - [ ] Repair damaged entries, rather than only reporting them.

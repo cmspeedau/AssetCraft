@@ -62,6 +62,11 @@ impl Paths {
     pub fn response_cache_dir(&self) -> PathBuf {
         self.cache_dir.join("api")
     }
+
+    /// Where cached thumbnails and previews live.
+    pub fn thumbnail_cache_dir(&self) -> PathBuf {
+        self.cache_dir.join("thumbnails")
+    }
 }
 
 /// Everything needed to talk to the outside world and to store local state.
@@ -140,6 +145,10 @@ mod tests {
         assert_eq!(
             paths.response_cache_dir(),
             PathBuf::from("/tmp/assetcraft-test/cache/api")
+        );
+        assert_eq!(
+            paths.thumbnail_cache_dir(),
+            PathBuf::from("/tmp/assetcraft-test/cache/thumbnails")
         );
     }
 

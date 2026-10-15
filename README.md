@@ -165,6 +165,9 @@ assetcraft library --offline
 assetcraft library --search "rock"
 assetcraft library --verify
 
+# Cache thumbnails so the library browses offline
+assetcraft library --thumbnails
+
 # Fetch a single file, resuming and verifying as it goes
 assetcraft fetch https://example.com/asset.zip --output asset.zip --sha256 <hash>
 

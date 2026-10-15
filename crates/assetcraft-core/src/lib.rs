@@ -11,6 +11,7 @@ pub mod model;
 pub use config::{Config, Paths};
 pub use error::{status_error, Error, Result};
 pub use model::{
-    AssetDetail, AssetFile, AssetFormat, AssetId, AssetSummary, Category, FormatType, LicenseType,
-    Page, Rating, SearchQuery, Seller, SortOrder, Tag, TagGroup,
+    AssetDetail, AssetFile, AssetFormat, AssetId, AssetImage, AssetSummary, Category,
+    DistributionPoint, DownloadInfo, FormatType, LibraryItem, LicenseType, Page, Rating,
+    SearchQuery, Seller, SortOrder, Tag, TagGroup,
 };

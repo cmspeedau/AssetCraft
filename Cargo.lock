@@ -111,10 +111,12 @@ name = "assetcraft-catalog"
 version = "0.1.0"
 dependencies = [
  "assetcraft-core",
+ "chrono",
  "httpmock",
  "reqwest",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "url",
 ]

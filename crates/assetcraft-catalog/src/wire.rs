@@ -174,6 +174,83 @@ pub struct ResultsWrapper<T> {
     pub results: Vec<T>,
 }
 
+/// Response body of `GET /e/accounts/{id}/ue/library`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Library {
+    pub cursors: Option<LibraryCursors>,
+    #[serde(default)]
+    pub results: Vec<LibraryAsset>,
+}
+
+/// Pagination cursor for a library response.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct LibraryCursors {
+    pub next: Option<String>,
+}
+
+/// One owned asset in the library.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryAsset {
+    pub asset_id: String,
+    pub asset_namespace: Option<String>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub url: Option<String>,
+    pub source: Option<String>,
+    pub distribution_method: Option<String>,
+    #[serde(default)]
+    pub categories: Vec<LibraryCategory>,
+    #[serde(default)]
+    pub images: Vec<LibraryImage>,
+}
+
+/// A category on a library asset.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct LibraryCategory {
+    pub id: Option<String>,
+    pub name: Option<String>,
+}
+
+/// An image on a library asset. Dimensions arrive as strings.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryImage {
+    pub url: Option<String>,
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    pub width: Option<String>,
+    pub height: Option<String>,
+    pub md5: Option<String>,
+}
+
+/// Download info for one file, from the `download-info` endpoint or a manifest.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadInfo {
+    pub artifact_id: Option<String>,
+    pub asset_format: Option<String>,
+    pub build_version: Option<String>,
+    #[serde(default)]
+    pub distribution_points: Vec<DistributionPoint>,
+}
+
+/// A signed location a manifest can be fetched from.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DistributionPoint {
+    pub manifest_url: String,
+    pub signature_expiration: Option<String>,
+}
+
+/// Response of `POST /e/artifacts/{id}/manifest`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetManifest {
+    #[serde(default)]
+    pub download_info: Vec<DownloadInfo>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,5 +401,64 @@ mod tests {
             wrapper.results[0].tags[0].name.as_deref(),
             Some("Realistic")
         );
+    }
+
+    #[test]
+    fn deserialize_library_page() {
+        let json = r#"{
+            "cursors": {"next": "lib-cursor-2"},
+            "results": [{
+                "assetId": "asset-1",
+                "assetNamespace": "ue",
+                "title": "Highland Rock",
+                "description": "A scanned rock",
+                "url": "https://www.fab.com/listings/asset-1",
+                "source": "fab",
+                "distributionMethod": "asset_pack",
+                "categories": [{"id": "cat-1", "name": "Rocks"}],
+                "images": [{"url": "https://media/rock.jpg", "type": "thumbnail", "width": "1024", "height": "1024"}]
+            }]
+        }"#;
+        let library: Library = serde_json::from_str(json).unwrap();
+        assert_eq!(library.results.len(), 1);
+        assert_eq!(
+            library.cursors.as_ref().unwrap().next.as_deref(),
+            Some("lib-cursor-2")
+        );
+
+        let asset = &library.results[0];
+        assert_eq!(asset.asset_id, "asset-1");
+        assert_eq!(asset.asset_namespace.as_deref(), Some("ue"));
+        assert_eq!(asset.categories[0].name.as_deref(), Some("Rocks"));
+        assert_eq!(asset.images[0].width.as_deref(), Some("1024"));
+        assert_eq!(asset.images[0].kind.as_deref(), Some("thumbnail"));
+    }
+
+    #[test]
+    fn deserialize_download_info() {
+        let json = r#"{
+            "artifactId": "art-1",
+            "assetFormat": "fbx",
+            "buildVersion": "v3",
+            "distributionPoints": [
+                {"manifestUrl": "https://cdn.example/manifest", "signatureExpiration": "2026-10-17T00:00:00.000Z"}
+            ]
+        }"#;
+        let info: DownloadInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.artifact_id.as_deref(), Some("art-1"));
+        assert_eq!(info.build_version.as_deref(), Some("v3"));
+        assert_eq!(
+            info.distribution_points[0].manifest_url,
+            "https://cdn.example/manifest"
+        );
+        assert!(info.distribution_points[0].signature_expiration.is_some());
+    }
+
+    #[test]
+    fn deserialize_asset_manifest_tolerates_empty_download_info() {
+        let manifest: AssetManifest = serde_json::from_str(r#"{"downloadInfo": []}"#).unwrap();
+        assert!(manifest.download_info.is_empty());
+        let empty: AssetManifest = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(empty.download_info.is_empty());
     }
 }

@@ -231,6 +231,77 @@ pub struct TagGroup {
     pub tags: Vec<Tag>,
 }
 
+/// An image attached to a library asset.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetImage {
+    /// Image kind, e.g. `thumbnail`.
+    pub kind: Option<String>,
+    /// Image URL.
+    pub url: Option<String>,
+    /// Pixel width, when reported.
+    pub width: Option<u32>,
+    /// Pixel height, when reported.
+    pub height: Option<u32>,
+    /// Content checksum, when reported.
+    pub md5: Option<String>,
+}
+
+/// An asset the user owns, as reported by their library.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LibraryItem {
+    /// Asset id, unique within the namespace.
+    pub asset_id: String,
+    /// Namespace the asset lives in.
+    pub namespace: String,
+    /// Display title.
+    pub title: String,
+    /// Long-form description.
+    pub description: Option<String>,
+    /// Marketplace URL for the asset.
+    pub url: Option<String>,
+    /// Where the asset came from.
+    pub source: Option<String>,
+    /// How the asset is distributed.
+    pub distribution_method: Option<String>,
+    /// Categories the asset belongs to.
+    pub categories: Vec<Category>,
+    /// Images for the asset.
+    pub images: Vec<AssetImage>,
+}
+
+impl LibraryItem {
+    /// The best available image URL, preferring one typed `thumbnail`.
+    pub fn thumbnail_url(&self) -> Option<&str> {
+        self.images
+            .iter()
+            .find(|image| image.kind.as_deref() == Some("thumbnail"))
+            .or_else(|| self.images.first())
+            .and_then(|image| image.url.as_deref())
+    }
+}
+
+/// One place a download manifest can be fetched from, with its signature expiry.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DistributionPoint {
+    /// URL of the manifest.
+    pub manifest_url: String,
+    /// When the signed URL stops working, as reported by the source.
+    pub signature_expiration: Option<String>,
+}
+
+/// Where and how one file of one format can be downloaded.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadInfo {
+    /// Artifact id needed to request the manifest.
+    pub artifact_id: String,
+    /// Format this download provides.
+    pub asset_format: String,
+    /// Build version, when reported.
+    pub build_version: Option<String>,
+    /// Signed distribution points.
+    pub distribution_points: Vec<DistributionPoint>,
+}
+
 /// A page of results plus the cursor needed to fetch the next one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Page<T> {

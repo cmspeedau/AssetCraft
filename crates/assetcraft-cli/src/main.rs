@@ -6,9 +6,9 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use assetcraft_auth::{EpicAuth, FileTokenStore, TokenStore};
+use assetcraft_auth::{ensure_fresh_token, EpicAuth, FileTokenStore, TokenStore};
 use assetcraft_catalog::FabClient;
-use assetcraft_core::{AssetSummary, Config, Page, SearchQuery, SortOrder};
+use assetcraft_core::{AssetSummary, Config, LibraryItem, Page, SearchQuery, SortOrder};
 
 /// Browse and download Megascans / Fab assets.
 #[derive(Debug, Parser)]
@@ -24,6 +24,8 @@ enum Command {
     Search(SearchArgs),
     /// Sign in to Epic Games so AssetCraft can reach your Fab library.
     Login(LoginArgs),
+    /// List the assets in your Fab library (requires sign-in).
+    Library(LibraryArgs),
     /// Inspect the catalog's taxonomy.
     Taxonomy(TaxonomyArgs),
 }
@@ -92,6 +94,17 @@ struct LoginArgs {
 }
 
 #[derive(Debug, Args)]
+struct LibraryArgs {
+    /// Continue from a cursor printed by a previous listing.
+    #[arg(long)]
+    cursor: Option<String>,
+
+    /// Print the raw JSON response instead of a summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
 struct TaxonomyArgs {
     #[command(subcommand)]
     which: TaxonomyCommand,
@@ -118,6 +131,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Search(args) => search(&config, args).await,
         Command::Login(args) => login(&config, args).await,
+        Command::Library(args) => library(&config, args).await,
         Command::Taxonomy(args) => taxonomy(&config, args).await,
     }
 }
@@ -171,6 +185,31 @@ async fn login(config: &Config, args: LoginArgs) -> Result<()> {
         None => println!("Signed in."),
     }
     println!("Token stored at {}.", store.path().display());
+    Ok(())
+}
+
+async fn library(config: &Config, args: LibraryArgs) -> Result<()> {
+    let auth = EpicAuth::from_config(config)?;
+    let store = FileTokenStore::new(config.paths.token_file());
+    let token = ensure_fresh_token(&auth, &store)
+        .await
+        .context("not signed in; run `assetcraft login` first")?;
+    let account_id = token
+        .account_id
+        .clone()
+        .context("the stored token has no account id; run `assetcraft login` again")?;
+
+    let client = FabClient::from_config(config)?.with_token(token.authorization_header());
+    let page = client
+        .library(&account_id, args.cursor.as_deref())
+        .await
+        .context("could not load your Fab library")?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&page)?);
+    } else {
+        print_library(&page);
+    }
     Ok(())
 }
 
@@ -233,5 +272,38 @@ fn print_page(page: &Page<AssetSummary>) {
 
     if let Some(cursor) = &page.next_cursor {
         println!("Next page: assetcraft search --cursor {cursor}");
+    }
+}
+
+fn print_library(page: &Page<LibraryItem>) {
+    println!("{} assets in your library\n", page.items.len());
+
+    for item in &page.items {
+        let title = if item.title.is_empty() {
+            item.asset_id.as_str()
+        } else {
+            item.title.as_str()
+        };
+        println!("{title}");
+        println!("  id: {}", item.asset_id);
+        if !item.namespace.is_empty() {
+            println!("  namespace: {}", item.namespace);
+        }
+        if let Some(url) = item.url.as_deref() {
+            println!("  url: {url}");
+        }
+        let categories: Vec<&str> = item
+            .categories
+            .iter()
+            .filter_map(|category| category.name.as_deref())
+            .collect();
+        if !categories.is_empty() {
+            println!("  categories: {}", categories.join(", "));
+        }
+        println!();
+    }
+
+    if let Some(cursor) = &page.next_cursor {
+        println!("Next page: assetcraft library --cursor {cursor}");
     }
 }

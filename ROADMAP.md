@@ -7,9 +7,9 @@ change as we learn. See [README.md](README.md) for what the project is.
 ## Current status
 
 - **M0 — Foundations:** complete.
-- **M1 — Catalog & Auth:** in progress. Public catalog reads, sign-in, and the
-  token store are in; the response cache and the authenticated library and
-  download endpoints are next.
+- **M1 — Catalog & Auth:** in progress. Public catalog reads, sign-in, token
+  storage and refresh, the response cache, and the authenticated library and
+  download-info endpoints are in. The OS keyring backend remains.
 
 ## Vision
 
@@ -57,16 +57,32 @@ platforms in CI.
 
 Read the library. This is the first milestone that talks to Fab.
 
-- [ ] Epic/Fab OAuth device-flow login from the CLI.
-- [ ] Tokens stored in the OS keyring; refresh handled transparently.
-- [ ] Fab API client with search, pagination, and filters (category, type,
-      resolution, tags).
-- [ ] Asset metadata model in `assetcraft-core` covering previews, texture maps,
-      LODs, and available download options.
-- [ ] On-disk response cache with sensible invalidation.
+- [x] Fab API client with search, pagination, and filters (type, category, sort,
+      free/discounted, seller).
+- [x] Sign-in with Epic, storing the token behind a `TokenStore` (a private file
+      today; see `docs/architecture.md` for why the OS keyring is deferred).
+- [x] Transparent refresh: commands resolve a usable token before calling an
+      authenticated endpoint.
+- [x] On-disk response cache for public reads, with a time-to-live.
+- [x] Asset metadata model covering previews, categories, formats, and download
+      locations.
+- [x] Authenticated library and download-info endpoints, including the Fab CSRF
+      handshake they require.
+- [ ] OS keyring token backend.
+- [ ] Texture-map and LOD metadata (lands with the download engine, M2).
 
-**DoD:** `assetcraft auth login` succeeds and `assetcraft search` lists real
-results with metadata, on a clean machine, against the live Fab API.
+> **Note on the device flow.** The original plan called for an OAuth *device
+> flow*. Epic's device-authorization endpoint answers `401` for the public
+> launcher client while `client_credentials` on the same client succeeds, so the
+> browser authorization-code flow is what ships.
+
+**DoD:** `assetcraft login` succeeds on a clean machine and `assetcraft search`
+lists real results with metadata against the live Fab API.
+
+> **Verification note.** The live Fab JSON API sits behind Cloudflare and answers
+> data-centre clients with a challenge, so the live end-to-end check is a manual
+> step rather than a CI one. Everything up to the network boundary is covered by
+> mocked tests.
 
 ### M2 — Download Engine → `v0.3.0`
 

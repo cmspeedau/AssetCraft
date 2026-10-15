@@ -9,10 +9,10 @@ quality tier and file formats you need, and push finished materials straight int
 your content-creation tools. It is built for speed, a small footprint, and clean
 cross-platform behavior on Windows, macOS, and Linux.
 
-> **Status: pre-alpha / design stage.** The architecture and roadmap are defined,
-> but no shipping build exists yet. See [ROADMAP.md](ROADMAP.md) for what lands
-> first, or jump to [Building from source](#building-from-source) to get the
-> workspace compiling.
+> **Status: pre-alpha.** The workspace builds, the CLI can search the Fab
+> catalog and sign in to your account, and CI runs on Linux, macOS, and Windows.
+> There is no desktop UI yet. See [ROADMAP.md](ROADMAP.md) for what lands next,
+> or jump to [Building from source](#building-from-source) to try the CLI.
 
 ---
 
@@ -124,7 +124,7 @@ A more detailed diagram and design notes will live in `docs/architecture.md`
 ### Prebuilt binaries
 
 Once `v0.1` ships, grab an installer for your platform from the
-[Releases](https://github.com/) page:
+[Releases](https://github.com/cmspeedau/AssetCraft/releases) page:
 
 | Platform | Artifact |
 | --- | --- |
@@ -137,7 +137,7 @@ Once `v0.1` ships, grab an installer for your platform from the
 Requires a recent stable Rust toolchain (see [Building from source](#building-from-source)):
 
 ```bash
-git clone <repo-url> assetcraft
+git clone https://github.com/cmspeedau/AssetCraft.git assetcraft
 cd assetcraft
 cargo install --path crates/assetcraft-cli
 ```
@@ -146,15 +146,24 @@ cargo install --path crates/assetcraft-cli
 
 ## Quick start
 
-> The commands below are the intended interface and may change before `v0.1`.
+Working today:
 
 ```bash
-# Log in to your Epic/Fab account (opens a browser for the device flow)
-assetcraft auth login
+# Sign in to your Epic/Fab account (opens a browser for an authorization code)
+assetcraft login
 
-# Search the catalog
-assetcraft search "rock cliff" --type surface --min-res 4k
+# Browse the catalog without signing in
+assetcraft search "rock cliff" --type surface --limit 20
+assetcraft taxonomy licenses
+assetcraft taxonomy tags
 
+# List the assets you own (requires sign-in)
+assetcraft library
+```
+
+Still to come (see [ROADMAP.md](ROADMAP.md)):
+
+```bash
 # Download an asset with a chosen tier and format
 assetcraft download <asset-id> --quality high --format fbx
 
@@ -203,9 +212,14 @@ Want a DCC on this list? Open an issue describing your workflow.
 
 ### Prerequisites
 
-- **Rust**: stable toolchain via [rustup](https://rustup.rs/) (a pinned
-  `rust-toolchain.toml` will be added in M0).
+- **Rust**: stable toolchain via [rustup](https://rustup.rs/). The pinned
+  `rust-toolchain.toml` selects the channel and the `rustfmt`/`clippy`
+  components automatically.
 - **Git**.
+
+TLS uses the platform's native stack (OpenSSL on Linux, Schannel on Windows,
+Secure Transport on macOS), so on Linux you also need the OpenSSL development
+headers (`libssl-dev` on Debian/Ubuntu).
 
 Platform-specific tooling for a native egui window (M5) and packaging will be
 documented per-OS as it is wired up.
@@ -244,8 +258,8 @@ assetcraft/
 
 ## Contributing
 
-Contributions are welcome once the workspace is bootstrapped (M0 on the
-[roadmap](ROADMAP.md)).
+Contributions are welcome. See the [roadmap](ROADMAP.md) for where the project
+is and what is next.
 
 Before opening a pull request:
 

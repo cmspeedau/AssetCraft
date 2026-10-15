@@ -4,9 +4,9 @@
 //! signs in, and copies the authorization code that comes back. That code is
 //! exchanged for an access token, which is refreshed thereafter.
 //!
-//! The browser *device* flow — where a short code is displayed and the user
-//! approves it — is planned but not implemented here; the shape of [`EpicAuth`]
-//! is designed to accommodate it without changing callers.
+//! Epic's browser *device* flow — where a short code is displayed and the user
+//! approves it — is not offered to the launcher client, so this crate does not
+//! attempt it; see the crate-level notes and `docs/architecture.md`.
 
 use assetcraft_core::{status_error, Config, Error, Result};
 use chrono::{DateTime, Duration, Utc};

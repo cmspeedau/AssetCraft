@@ -1,8 +1,9 @@
 //! Translation from Fab's wire format into the AssetCraft domain model.
 
 use assetcraft_core::{
-    AssetDetail, AssetFile, AssetFormat, AssetId, AssetSummary, Category, FormatType, LicenseType,
-    Page, Rating, Seller, Tag, TagGroup,
+    AssetDetail, AssetFile, AssetFormat, AssetId, AssetImage, AssetSummary, Category,
+    DistributionPoint, DownloadInfo, FormatType, LibraryItem, LicenseType, Page, Rating, Seller,
+    Tag, TagGroup,
 };
 
 use crate::wire;
@@ -160,6 +161,74 @@ fn best_thumbnail(thumbnails: &[wire::Thumbnail]) -> Option<String> {
         .and_then(|thumb| thumb.media_url.clone())
 }
 
+/// Map a library response into a page of [`LibraryItem`].
+pub fn library_page_from_wire(library: wire::Library) -> Page<LibraryItem> {
+    // The library endpoint reports no total, only a cursor.
+    let next_cursor = library.cursors.and_then(|cursors| cursors.next);
+    let items = library
+        .results
+        .into_iter()
+        .map(library_item_from_wire)
+        .collect();
+    Page::new(items, None, next_cursor)
+}
+
+/// Map one owned asset into a domain [`LibraryItem`].
+pub fn library_item_from_wire(asset: wire::LibraryAsset) -> LibraryItem {
+    LibraryItem {
+        asset_id: asset.asset_id,
+        namespace: asset.asset_namespace.unwrap_or_default(),
+        title: asset.title.unwrap_or_default(),
+        description: asset.description,
+        url: asset.url,
+        source: asset.source,
+        distribution_method: asset.distribution_method,
+        categories: asset
+            .categories
+            .into_iter()
+            .map(|category| Category {
+                id: category.id,
+                name: category.name,
+                slug: None,
+                path: None,
+            })
+            .collect(),
+        images: asset
+            .images
+            .into_iter()
+            .map(|image| AssetImage {
+                kind: image.kind,
+                url: image.url,
+                width: parse_dimension(image.width),
+                height: parse_dimension(image.height),
+                md5: image.md5,
+            })
+            .collect(),
+    }
+}
+
+/// Map download info into the domain type.
+pub fn download_info_from_wire(info: wire::DownloadInfo) -> DownloadInfo {
+    DownloadInfo {
+        artifact_id: info.artifact_id.unwrap_or_default(),
+        asset_format: info.asset_format.unwrap_or_default(),
+        build_version: info.build_version,
+        distribution_points: info
+            .distribution_points
+            .into_iter()
+            .map(|point| DistributionPoint {
+                manifest_url: point.manifest_url,
+                signature_expiration: point.signature_expiration,
+            })
+            .collect(),
+    }
+}
+
+/// Image dimensions arrive as strings; a non-numeric value is simply dropped.
+fn parse_dimension(value: Option<String>) -> Option<u32> {
+    value.and_then(|raw| raw.parse().ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,5 +354,74 @@ mod tests {
         assert_eq!(formats[0].code(), Some("fbx"));
         assert_eq!(formats[0].files[0].size_bytes, Some(2048));
         assert_eq!(formats[0].files[0].name.as_deref(), Some("asset.zip"));
+    }
+
+    #[test]
+    fn library_item_maps_images_and_categories() {
+        let asset = wire::LibraryAsset {
+            asset_id: "asset-1".to_string(),
+            asset_namespace: Some("ue".to_string()),
+            title: Some("Highland Rock".to_string()),
+            description: Some("desc".to_string()),
+            categories: vec![wire::LibraryCategory {
+                id: Some("c1".to_string()),
+                name: Some("Rocks".to_string()),
+            }],
+            images: vec![wire::LibraryImage {
+                url: Some("https://media/rock.jpg".to_string()),
+                kind: Some("thumbnail".to_string()),
+                width: Some("1024".to_string()),
+                height: Some("not-a-number".to_string()),
+                md5: None,
+            }],
+            ..Default::default()
+        };
+
+        let item = library_item_from_wire(asset);
+        assert_eq!(item.asset_id, "asset-1");
+        assert_eq!(item.namespace, "ue");
+        assert_eq!(item.categories[0].name.as_deref(), Some("Rocks"));
+        assert_eq!(item.images[0].width, Some(1024));
+        // A non-numeric dimension is dropped rather than failing the whole item.
+        assert_eq!(item.images[0].height, None);
+        assert_eq!(item.thumbnail_url(), Some("https://media/rock.jpg"));
+    }
+
+    #[test]
+    fn library_page_carries_the_cursor() {
+        let library = wire::Library {
+            cursors: Some(wire::LibraryCursors {
+                next: Some("lib-2".to_string()),
+            }),
+            results: vec![wire::LibraryAsset {
+                asset_id: "a".to_string(),
+                ..Default::default()
+            }],
+        };
+        let page = library_page_from_wire(library);
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.next_cursor.as_deref(), Some("lib-2"));
+        // The library endpoint reports no total.
+        assert_eq!(page.total, None);
+    }
+
+    #[test]
+    fn download_info_maps_distribution_points() {
+        let info = download_info_from_wire(wire::DownloadInfo {
+            artifact_id: Some("art-1".to_string()),
+            asset_format: Some("fbx".to_string()),
+            build_version: Some("v3".to_string()),
+            distribution_points: vec![wire::DistributionPoint {
+                manifest_url: "https://cdn/manifest".to_string(),
+                signature_expiration: Some("2026-10-17T00:00:00Z".to_string()),
+            }],
+        });
+        assert_eq!(info.artifact_id, "art-1");
+        assert_eq!(info.asset_format, "fbx");
+        assert_eq!(info.distribution_points.len(), 1);
+        assert_eq!(
+            info.distribution_points[0].manifest_url,
+            "https://cdn/manifest"
+        );
     }
 }

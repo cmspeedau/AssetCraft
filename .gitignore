@@ -1,0 +1,9 @@
+# Build output
+/target
+**/*.rs.bk
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp

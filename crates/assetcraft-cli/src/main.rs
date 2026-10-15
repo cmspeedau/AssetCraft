@@ -3,7 +3,7 @@
 //! This is the headless entry point to the same engine the desktop app will
 //! use. For M1 it covers the read side of the catalog plus sign-in.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -14,7 +14,9 @@ use assetcraft_core::{
     AssetFormat, AssetId, AssetSummary, Config, LibraryItem, Page, Preference, SearchQuery,
     SelectionCriteria, SortOrder,
 };
-use assetcraft_download::{BandwidthLimit, DownloadFile, DownloadOptions, Downloader, Manifest};
+use assetcraft_download::{
+    BandwidthLimit, ChunkStore, DownloadFile, DownloadOptions, Downloader, Manifest,
+};
 use assetcraft_library::{Library, MediaCache};
 
 /// Browse and download Megascans / Fab assets.
@@ -39,6 +41,8 @@ enum Command {
     Formats(FormatsArgs),
     /// Resolve an owned asset into the chunks and files to fetch (requires sign-in).
     Resolve(ResolveArgs),
+    /// Download an owned asset's files and reassemble them (requires sign-in).
+    Download(DownloadArgs),
     /// Inspect the catalog's taxonomy.
     Taxonomy(TaxonomyArgs),
 }
@@ -185,6 +189,35 @@ struct ResolveArgs {
     chunks: bool,
 }
 
+#[derive(Debug, Args)]
+struct DownloadArgs {
+    /// Asset id to download (as printed by `search`).
+    asset_id: String,
+
+    #[command(flatten)]
+    select: SelectionArgs,
+
+    /// Directory to write the asset's files into.
+    #[arg(long, short)]
+    output: PathBuf,
+
+    /// Base URL the manifest's chunk paths hang off, e.g. `…/CloudDir`.
+    #[arg(long)]
+    chunk_base: String,
+
+    /// Total attempts per chunk, including the first.
+    #[arg(long, default_value_t = 3)]
+    attempts: u32,
+
+    /// How many chunks to fetch at once.
+    #[arg(long)]
+    concurrency: Option<usize>,
+
+    /// Cap the download rate, e.g. `500k` or `2M` (bytes per second).
+    #[arg(long, value_parser = parse_rate)]
+    limit: Option<u64>,
+}
+
 /// Selection flags shared by `formats` and `resolve`.
 #[derive(Debug, Args)]
 struct SelectionArgs {
@@ -271,6 +304,7 @@ async fn main() -> Result<()> {
         Command::Fetch(args) => fetch(args).await,
         Command::Formats(args) => formats(&config, args).await,
         Command::Resolve(args) => resolve(&config, args).await,
+        Command::Download(args) => download(&config, args).await,
         Command::Taxonomy(args) => taxonomy(&config, args).await,
     }
 }
@@ -607,16 +641,28 @@ fn print_formats(formats: &[AssetFormat]) {
 ///
 /// This composes the public format listing, the signed download info, and the
 /// binary manifest parser. It is the first end-to-end path from an asset id to
-/// "what to fetch"; reassembling the chunks into files is a later step.
+/// "what to fetch".
 async fn resolve(config: &Config, args: ResolveArgs) -> Result<()> {
     let client = FabClient::from_config(config)?;
+    let criteria = args.select.criteria();
+    let (_format_code, manifest) = resolve_manifest(&client, &args.asset_id, &criteria).await?;
+    print_manifest(&manifest, args.chunks);
+    Ok(())
+}
+
+/// Select a format and file, fetch the signed download info, and parse the
+/// manifest. Shared by `resolve` and `download`.
+async fn resolve_manifest(
+    client: &FabClient,
+    asset_id: &str,
+    criteria: &SelectionCriteria,
+) -> Result<(String, Manifest)> {
     let formats = client
-        .listing_formats(&AssetId::new(&args.asset_id))
+        .listing_formats(&AssetId::new(asset_id))
         .await
         .context("could not load asset formats")?;
 
-    let criteria = args.select.criteria();
-    let chosen = assetcraft_core::select(&formats, &criteria).context("selection failed")?;
+    let chosen = assetcraft_core::select(&formats, criteria).context("selection failed")?;
     let format_code = chosen
         .format_code
         .clone()
@@ -633,7 +679,7 @@ async fn resolve(config: &Config, args: ResolveArgs) -> Result<()> {
     );
 
     let info = client
-        .download_info(&args.asset_id, &format_code, &file_id)
+        .download_info(asset_id, &format_code, &file_id)
         .await
         .context("could not resolve download info")?;
     println!("Artifact: {}", info.artifact_id);
@@ -652,16 +698,102 @@ async fn resolve(config: &Config, args: ResolveArgs) -> Result<()> {
             }
         };
         match Manifest::parse(&bytes) {
-            Ok(manifest) => {
-                print_manifest(&manifest, args.chunks);
-                return Ok(());
-            }
+            Ok(manifest) => return Ok((format_code, manifest)),
             Err(err) => {
                 last_error = Some(anyhow::Error::new(err).context("manifest could not be parsed"));
             }
         }
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no distribution point produced a manifest")))
+}
+
+/// Download an owned asset's chunks, reassemble its files, and verify them.
+///
+/// The chunk base URL is not derivable from the manifest, so it is passed in;
+/// once a real signed-in response confirms how Fab pairs it with the manifest,
+/// this can be filled in automatically.
+async fn download(config: &Config, args: DownloadArgs) -> Result<()> {
+    let client = FabClient::from_config(config)?;
+    let criteria = args.select.criteria();
+    let (_format_code, manifest) = resolve_manifest(&client, &args.asset_id, &criteria).await?;
+
+    println!(
+        "{} files, {} chunks ({} bytes to download).",
+        manifest.files.len(),
+        manifest.chunks.len(),
+        manifest.total_download_size()
+    );
+
+    // Chunks land in a scratch directory beside the output, then are removed.
+    let scratch = args.output.join(".assetcraft-chunks");
+    std::fs::create_dir_all(&scratch).context("could not create the scratch directory")?;
+
+    let chunk_files: Vec<DownloadFile> = manifest
+        .chunk_downloads(&args.chunk_base)
+        .into_iter()
+        .map(|chunk| DownloadFile {
+            url: chunk.url,
+            destination: scratch.join(format!("{}.chunk", chunk.guid)),
+            size: Some(chunk.size_bytes),
+            sha256: None,
+        })
+        .collect();
+
+    let options = DownloadOptions {
+        max_attempts: args.attempts,
+        concurrency: args
+            .concurrency
+            .unwrap_or_else(|| DownloadOptions::default().concurrency),
+        bandwidth: args.limit.map(BandwidthLimit::new),
+        ..Default::default()
+    };
+    let downloader = Downloader::with_default_client(options)?;
+    let outcomes = downloader
+        .download_all(chunk_files, |progress| {
+            if progress.bytes_total == Some(progress.bytes_done) {
+                eprintln!("  fetched chunk {}/{}", progress.index + 1, progress.total);
+            }
+        })
+        .await
+        .context("chunk download failed")?;
+
+    let mut store = ChunkStore::new();
+    for outcome in &outcomes {
+        let bytes =
+            std::fs::read(&outcome.destination).context("could not read a downloaded chunk")?;
+        store
+            .insert_file(&bytes)
+            .context("could not decode a downloaded chunk")?;
+    }
+
+    let files = manifest
+        .assemble(&store)
+        .context("could not reassemble the asset")?;
+    for file in &files {
+        let path = safe_join(&args.output, &file.filename)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).context("could not create a directory")?;
+        }
+        std::fs::write(&path, &file.data)
+            .with_context(|| format!("could not write {}", path.display()))?;
+    }
+
+    let _ = std::fs::remove_dir_all(&scratch);
+    println!("Wrote {} files to {}.", files.len(), args.output.display());
+    Ok(())
+}
+
+/// Join a manifest path onto the output root, refusing anything that escapes.
+fn safe_join(root: &Path, name: &str) -> Result<PathBuf> {
+    let relative = Path::new(name);
+    let escapes = relative.is_absolute()
+        || relative
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir));
+    if escapes {
+        anyhow::bail!("the manifest lists a path outside the output directory: {name:?}");
+    }
+    Ok(root.join(relative))
 }
 
 fn print_manifest(manifest: &Manifest, show_chunks: bool) {

@@ -50,9 +50,9 @@ pub enum Error {
     #[error("no match: {0}")]
     NoMatch(String),
 
-    /// A binary manifest could not be parsed.
-    #[error("malformed manifest: {0}")]
-    Manifest(String),
+    /// A binary artifact (a manifest or a chunk) could not be parsed.
+    #[error("malformed artifact: {0}")]
+    Artifact(String),
 
     /// Anything else, with a human-readable explanation.
     #[error("{0}")]

@@ -27,10 +27,11 @@
 //! separate step and is not done here.
 
 use std::collections::BTreeMap;
-use std::io::Read;
 
 use assetcraft_core::{Error, Result};
 use sha1::{Digest, Sha1};
+
+use crate::binary::{corrupt, inflate, Reader};
 
 /// The header magic that marks an Epic binary manifest.
 pub const HEADER_MAGIC: u32 = 0x44BEC00C;
@@ -46,11 +47,6 @@ const FILE_FLAG_READ_ONLY: u8 = 0x1;
 const FILE_FLAG_COMPRESSED: u8 = 0x2;
 /// File flag: executable.
 const FILE_FLAG_EXECUTABLE: u8 = 0x4;
-
-/// An error for a body that does not follow the documented layout.
-fn corrupt(detail: impl std::fmt::Display) -> Error {
-    Error::Manifest(detail.to_string())
-}
 
 /// A parsed binary manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,7 +110,7 @@ impl Manifest {
         }
 
         if stored_as & FLAG_ENCRYPTED != 0 {
-            return Err(Error::Manifest(
+            return Err(Error::Artifact(
                 "manifest is encrypted, which AssetCraft cannot read".to_string(),
             ));
         }
@@ -642,16 +638,6 @@ fn finish_section(
     )))
 }
 
-/// Decompress a zlib-compressed manifest body.
-fn inflate(data: &[u8]) -> Result<Vec<u8>> {
-    let mut decoder = flate2::read::ZlibDecoder::new(data);
-    let mut out = Vec::new();
-    decoder
-        .read_to_end(&mut out)
-        .map_err(|err| Error::Manifest(format!("manifest body is not valid zlib: {err}")))?;
-    Ok(out)
-}
-
 /// The 16 little-endian bytes of a GUID.
 fn guid_bytes(guid: &[u32; 4]) -> [u8; 16] {
     let mut out = [0u8; 16];
@@ -682,123 +668,8 @@ fn base64_url_nopad(data: &[u8]) -> String {
     out
 }
 
-/// A cursor over a manifest's bytes.
-struct Reader<'a> {
-    data: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0 }
-    }
-
-    fn pos(&self) -> usize {
-        self.pos
-    }
-
-    fn remaining(&self) -> usize {
-        self.data.len().saturating_sub(self.pos)
-    }
-
-    fn take(&mut self, len: usize) -> Result<&'a [u8]> {
-        let end = self
-            .pos
-            .checked_add(len)
-            .ok_or_else(|| corrupt("length overflow"))?;
-        if end > self.data.len() {
-            return Err(corrupt(format!(
-                "unexpected end of manifest: needed {len} bytes, {} left",
-                self.remaining()
-            )));
-        }
-        let slice = &self.data[self.pos..end];
-        self.pos = end;
-        Ok(slice)
-    }
-
-    fn skip(&mut self, len: usize) -> Result<()> {
-        self.take(len).map(|_| ())
-    }
-
-    fn seek(&mut self, pos: usize) -> Result<()> {
-        if pos > self.data.len() {
-            return Err(corrupt(format!(
-                "cannot seek to {pos} in a {} byte manifest",
-                self.data.len()
-            )));
-        }
-        self.pos = pos;
-        Ok(())
-    }
-
-    fn u8(&mut self) -> Result<u8> {
-        Ok(self.take(1)?[0])
-    }
-
-    fn u32(&mut self) -> Result<u32> {
-        Ok(u32::from_le_bytes(self.array()?))
-    }
-
-    fn i32(&mut self) -> Result<i32> {
-        Ok(i32::from_le_bytes(self.array()?))
-    }
-
-    fn u64(&mut self) -> Result<u64> {
-        Ok(u64::from_le_bytes(self.array()?))
-    }
-
-    fn i64(&mut self) -> Result<i64> {
-        Ok(i64::from_le_bytes(self.array()?))
-    }
-
-    fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
-        let slice = self.take(N)?;
-        Ok(slice
-            .try_into()
-            .expect("take returned exactly the requested number of bytes"))
-    }
-
-    /// A GUID, four little-endian 32-bit words.
-    fn guid(&mut self) -> Result<[u32; 4]> {
-        let mut guid = [0u32; 4];
-        for word in &mut guid {
-            *word = self.u32()?;
-        }
-        Ok(guid)
-    }
-
-    /// A length-prefixed string. A positive length is ASCII/UTF-8 with a NUL
-    /// terminator; a negative length is UTF-16 with a two-byte terminator.
-    fn fstring(&mut self) -> Result<String> {
-        let length = self.i32()?;
-        if length == 0 {
-            return Ok(String::new());
-        }
-        if length > 0 {
-            let bytes = self.take(length as usize)?;
-            // The final byte is the NUL terminator.
-            let text = &bytes[..bytes.len() - 1];
-            return Ok(String::from_utf8_lossy(text).into_owned());
-        }
-        // The count includes the two-byte terminator.
-        let units = (length as i64).unsigned_abs() as usize;
-        let bytes = self.take(
-            units
-                .checked_mul(2)
-                .ok_or_else(|| corrupt("string too long"))?,
-        )?;
-        let mut code_units: Vec<u16> = bytes
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .collect();
-        code_units.pop();
-        Ok(String::from_utf16_lossy(&code_units))
-    }
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     // A hand-built manifest. Every byte is written from the specification, and
@@ -931,6 +802,67 @@ mod tests {
         }
     }
 
+    /// A version-18 manifest with one file assembled from the given chunk parts.
+    /// `parts` are `(guid, offset, size)`, and `file_sha1` is the hash the
+    /// manifest records for the file. The chunk data list is empty: the chunks
+    /// are supplied separately when reassembling.
+    pub(crate) fn manifest_with_file(
+        parts: &[([u32; 4], u32, u32)],
+        file_sha1: [u8; 20],
+    ) -> Vec<u8> {
+        let mut body = Vec::new();
+
+        section(&mut body, |out| {
+            out.push(0);
+            put_u32(out, 18);
+            out.push(0);
+            put_u32(out, 0);
+            put_fstring(out, "App");
+            put_fstring(out, "1");
+            put_fstring(out, "");
+            put_fstring(out, "");
+            put_u32(out, 0);
+            put_fstring(out, "");
+            put_fstring(out, "");
+            put_fstring(out, "");
+        });
+        section(&mut body, |out| {
+            out.push(0);
+            put_u32(out, 0); // no chunks in the manifest itself
+        });
+        section(&mut body, |out| {
+            out.push(0);
+            put_u32(out, 1); // one file
+            put_fstring(out, "Content/rock.uasset");
+            put_fstring(out, "");
+            out.extend_from_slice(&file_sha1);
+            out.push(0); // flags
+            put_u32(out, 0); // install tags
+            put_u32(out, parts.len() as u32);
+            for (guid, offset, size) in parts {
+                put_u32(out, 28);
+                put_guid(out, *guid);
+                put_u32(out, *offset);
+                put_u32(out, *size);
+            }
+        });
+        section(&mut body, |out| {
+            out.push(0);
+            put_u32(out, 0);
+        });
+
+        let mut bytes = Vec::new();
+        put_u32(&mut bytes, HEADER_MAGIC);
+        put_u32(&mut bytes, 41);
+        put_u32(&mut bytes, body.len() as u32);
+        put_u32(&mut bytes, body.len() as u32);
+        bytes.extend_from_slice(&[0u8; 20]);
+        bytes.push(0);
+        put_u32(&mut bytes, 18);
+        bytes.extend_from_slice(&body);
+        bytes
+    }
+
     #[test]
     fn hand_built_section_sizes_match_the_specification() {
         let fixture = Fixture::simple();
@@ -1038,19 +970,6 @@ mod tests {
     }
 
     #[test]
-    fn fstring_reads_utf16_when_the_length_is_negative() {
-        // "-5" means four UTF-16 code units plus a terminator.
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&(-5i32).to_le_bytes());
-        for unit in [0x0052u16, 0x006Fu16, 0x0063u16, 0x006Bu16] {
-            bytes.extend_from_slice(&unit.to_le_bytes());
-        }
-        bytes.extend_from_slice(&[0, 0]);
-        let mut reader = Reader::new(&bytes);
-        assert_eq!(reader.fstring().unwrap(), "Rock");
-    }
-
-    #[test]
     fn fstring_reads_ascii_and_empty() {
         let mut bytes = Vec::new();
         put_fstring(&mut bytes, "");
@@ -1066,7 +985,7 @@ mod tests {
         bytes[0..4].copy_from_slice(&0xDEADBEEFu32.to_le_bytes());
         let err = Manifest::parse(&bytes).unwrap_err();
         assert!(
-            matches!(err, Error::Manifest(ref message) if message.contains("bad magic")),
+            matches!(err, Error::Artifact(ref message) if message.contains("bad magic")),
             "got {err:?}"
         );
     }
@@ -1077,7 +996,7 @@ mod tests {
         bytes[36] |= FLAG_ENCRYPTED; // stored_as
         let err = Manifest::parse(&bytes).unwrap_err();
         assert!(
-            matches!(err, Error::Manifest(ref message) if message.contains("encrypted")),
+            matches!(err, Error::Artifact(ref message) if message.contains("encrypted")),
             "got {err:?}"
         );
     }
@@ -1086,7 +1005,7 @@ mod tests {
     fn rejects_a_truncated_manifest() {
         let bytes = Fixture::simple().bytes();
         let err = Manifest::parse(&bytes[..50]).unwrap_err();
-        assert!(matches!(err, Error::Manifest(_)), "got {err:?}");
+        assert!(matches!(err, Error::Artifact(_)), "got {err:?}");
     }
 
     #[test]
@@ -1099,7 +1018,7 @@ mod tests {
         bytes[count_at..count_at + 4].copy_from_slice(&1_000_000u32.to_le_bytes());
         let err = Manifest::parse(&bytes).unwrap_err();
         assert!(
-            matches!(err, Error::Manifest(ref message) if message.contains("does not fit")),
+            matches!(err, Error::Artifact(ref message) if message.contains("does not fit")),
             "got {err:?}"
         );
     }
@@ -1156,7 +1075,7 @@ mod tests {
 
         let err = Manifest::parse(&bytes).unwrap_err();
         assert!(
-            matches!(err, Error::Manifest(ref message) if message.contains("SHA-1")),
+            matches!(err, Error::Artifact(ref message) if message.contains("SHA-1")),
             "got {err:?}"
         );
     }

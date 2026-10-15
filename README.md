@@ -66,6 +66,7 @@ endorsed by, or supported by Epic Games, Quixel, or Fab.
 - Concurrent, **resumable** downloads with retry and backoff.
 - Selectable quality tiers and file formats per asset.
 - Checksum verification and integrity checks on every completed download.
+- Reassemble Fab's chunked artifacts and verify each output file against its SHA-1.
 - Bandwidth limits and a persistent download queue.
 
 ### Library
@@ -101,7 +102,7 @@ headless CLI.
 | `assetcraft-core` | lib | Domain model, traits, configuration, and error types. |
 | `assetcraft-auth` | lib | Epic/Fab OAuth device flow and secure token storage (OS keyring). |
 | `assetcraft-catalog` | lib | Fab API client: search, filters, metadata, and response cache. |
-| `assetcraft-download` | lib | Concurrent, resumable download engine with integrity checks and manifest parsing. |
+| `assetcraft-download` | lib | Concurrent, resumable download engine with integrity checks, manifest and chunk parsing, and reassembly. |
 | `assetcraft-library` | lib | Local SQLite library index, thumbnails, dedup, offline browse. |
 | `assetcraft-dcc-blender` | adapter | Blender exporter and Python addon bridge. |
 | `assetcraft-cli` | bin | Headless binary for scripted / CI workflows. |
@@ -164,6 +165,12 @@ assetcraft formats <asset-id> --format fbx --quality 4K --prefer largest
 # Resolve an owned asset into the chunks and files to fetch (requires sign-in)
 assetcraft resolve <asset-id> --format fbx --quality 4K --chunks
 
+# Download and reassemble it, verifying every file (requires sign-in).
+# The CDN base the chunk paths hang off is passed in with --chunk-base until a
+# real signed-in response confirms how Fab supplies it.
+assetcraft download <asset-id> --format fbx --quality 4K \
+  --output ./Downloads --chunk-base https://cdn.example.com/CloudDir
+
 # Sync the assets you own into the local library (requires sign-in)
 assetcraft library
 
@@ -185,9 +192,6 @@ assetcraft fetch https://example.com/asset.zip --output asset.zip --limit 2M
 Still to come (see [ROADMAP.md](ROADMAP.md)):
 
 ```bash
-# Download an asset with a chosen tier and format
-assetcraft download <asset-id> --quality high --format fbx
-
 # Export into a Blender project
 assetcraft export <asset-id> --dcc blender --target ./MyProject
 

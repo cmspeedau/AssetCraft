@@ -18,18 +18,27 @@
 //! - **[`manifest`]**, a parser for Fab's signed binary artifact manifest, which
 //!   resolves an owned asset into the chunks to fetch and the files they make
 //!   up.
+//! - **[`chunk`]** and the reassembly in [`Manifest::assemble`], which decode a
+//!   chunk file and splice the chunk parts back into the files the manifest
+//!   describes, checking each file against its SHA-1.
 //!
-//! What is **not** implemented yet: turning a parsed manifest's chunks into the
-//! bytes of its files. That needs the CDN base URL Fab pairs with the manifest
-//! and chunk decompression, and it is tracked as the next download-engine task
-//! in ROADMAP.md.
+//! What is **not** automated: the CDN base URL Fab pairs with the manifest. The
+//! manifest carries each chunk's relative path but not its host, and how Fab
+//! supplies the base can only be confirmed against a real signed-in response, so
+//! [`Manifest::chunk_downloads`] joins a base you supply with each chunk's
+//! documented path; the CLI takes it as `--chunk-base`.
 
+mod assemble;
 pub mod bandwidth;
+mod binary;
+pub mod chunk;
 pub mod engine;
 pub mod manifest;
 pub mod queue;
 
+pub use assemble::AssembledFile;
 pub use bandwidth::{BandwidthLimit, BandwidthLimiter};
+pub use chunk::{Chunk, ChunkStore};
 pub use engine::{DownloadFile, DownloadOptions, DownloadOutcome, Downloader, Progress};
 pub use manifest::{ChunkDownload, ChunkInfo, ChunkPart, FileEntry, Manifest, ManifestMeta};
 pub use queue::{DownloadQueue, DownloadRequest};

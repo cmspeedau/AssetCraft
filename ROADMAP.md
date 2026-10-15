@@ -12,10 +12,11 @@ change as we learn. See [README.md](README.md) for what the project is.
   download-info endpoints are in. The OS keyring backend remains.
 - **M2 — Download Engine:** in progress. The transport engine (bounded
   concurrency, resumption, retries, integrity verification, a global bandwidth
-  limit), the persistent queue, format and quality selection, and the binary
-  manifest parser that resolves an owned asset into the chunks and files to
-  fetch are all in; reassembling chunks into files, and the CDN base to fetch
-  them from, remain.
+  limit), the persistent queue, format and quality selection, the binary
+  manifest parser, and chunk reassembly (decode a chunk file, splice its parts
+  into the files, verify each file's SHA-1) are all in. What remains is the CDN
+  base URL Fab pairs with the manifest, which has to be confirmed against a real
+  signed-in response.
 - **M3 — Library:** in progress. A SQLite library backs offline browse, search,
   an integrity check, and a thumbnail cache; re-export from the library
   remains.
@@ -107,20 +108,31 @@ Get bytes on disk, reliably.
 - [x] A persistent, de-duplicating download queue.
 - [x] Resolve an owned asset into the files to fetch: parse Fab's signed binary
       artifact manifest (Epic's chunked manifest format, magic `0x44BEC00C`).
+- [x] Reassemble files from chunks: decode each chunk file (magic `0xB1FE3AA2`),
+      splice its parts into place, and verify each file against its SHA-1.
 - [x] Quality-tier and format selection per asset.
 - [x] Global bandwidth limit.
 
 > **Ordering note.** The transport engine and the manifest parser were split.
 > The engine can be proven correct with tests against a local server; the
-> manifest parser was written from the format the wider Epic tooling ecosystem
-> documents and is pinned by a hand-built fixture, but it has not been validated
-> against a manifest from a real account, so a first run against real data is a
-> validation step. Format and quality selection sits between them: it works over
-> the format metadata the catalog already returns, so it did not have to wait for
-> the parser. See `docs/architecture.md`.
+> manifest and chunk parsers were written from the format the wider Epic tooling
+> ecosystem documents and are pinned by hand-built fixtures, but they have not
+> been validated against bytes from a real account, so a first run against real
+> data is a validation step. Format and quality selection sits between them: it
+> works over the format metadata the catalog already returns, so it did not have
+> to wait for the parser. `assetcraft download` ties resolution, chunk fetching,
+> and reassembly together, but it needs the CDN base URL passed in with
+> `--chunk-base` until a real signed-in response confirms how Fab derives it.
+> See `docs/architecture.md`.
 
 **DoD:** A large asset can be downloaded, interrupted mid-transfer, resumed to
 completion, and verified — with no corruption.
+
+> **Reaching the DoD.** Every piece is in place and tested in isolation: the
+> engine resumes and verifies transfers, the manifest names the chunks, and
+> reassembly checks each output file's SHA-1. The one gap is the CDN base URL
+> the chunk paths hang off, which `assetcraft download` takes as `--chunk-base`
+> until a real signed-in response confirms how Fab supplies it.
 
 ### M3 — Library → `v0.4.0`
 

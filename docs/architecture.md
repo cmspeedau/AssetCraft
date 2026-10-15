@@ -35,7 +35,7 @@ rather than a change to the engine.
 | `assetcraft-core` | lib | Domain model, config, error type, selection | M0 |
 | `assetcraft-catalog` | lib | Fab API client and response cache | M1 |
 | `assetcraft-auth` | lib | Epic OAuth and token storage | M1 |
-| `assetcraft-download` | lib | Download queue, transfer engine, manifest parser | M2 |
+| `assetcraft-download` | lib | Download queue, transfer engine, manifest and chunk parsing, reassembly | M2 |
 | `assetcraft-library` | lib | Local library index | M3 |
 | `assetcraft-dcc-blender` | adapter | Blender export | M4 |
 | `assetcraft-cli` | bin | Headless front end | M1 |
@@ -132,13 +132,14 @@ When `DownloadOptions::bandwidth` is set, the byte budget is shared by every
 transfer in the batch rather than applied per file, so the cap is on the engine:
 ten concurrent transfers still total the limit.
 
-### Asset resolution (implemented, M2)
+### Asset resolution and reassembly (implemented, M2)
 
 The step that turns an owned asset into bytes: pick a format and file, ask Fab
-for its signed download info, then read the binary manifest that info points at.
+for its signed download info, read the binary manifest that info points at,
+fetch the chunks, and splice them back into files.
 
 ```
-assetcraft resolve <id> --format fbx --quality 4K
+assetcraft download <id> --format fbx --quality 4K --output dir --chunk-base URL
         │
         ▼
 FabClient::listing_formats(&id)         GET /i/listings/{id}/asset-formats (no auth)
@@ -157,20 +158,41 @@ Manifest::parse(&bytes)                 chunked manifest (magic 0x44BEC00C)
         │                               ──▶ chunks (to fetch) + files (chunk parts)
         ▼
 Manifest::chunk_downloads(base_url)     each chunk's URL under the CDN base
+        │
+        ▼
+Downloader::download_all(files)         the transport engine (M2)
+        │
+        ▼
+Chunk::decode(&bytes)                   chunk file (magic 0xB1FE3AA2), zlib body
+        │                               ──▶ decompressed chunk bytes, keyed by GUID
+        ▼
+Manifest::assemble(&store)              splice chunk parts, check each file's SHA-1
+        │
+        ▼
+AssembledFile { filename, data }        written under the output directory
 ```
 
 `Manifest` is the resolution result: `chunks` are the compressed blobs to
 download, and `files` are the logical outputs, each cut from one or more
-`chunk_parts` that point into chunks. Reassembling the chunks into files — and
-the CDN base URL the chunks hang off — is the remaining piece and is not done
-yet. `resolve` stops at printing the plan.
+`chunk_parts` that point into chunks. Reassembly gathers the decompressed chunks
+into a `ChunkStore` keyed by GUID, copies each part into its file's place, and
+verifies the result against the SHA-1 the manifest records — the integrity check
+the download engine's definition of done rests on. Chunk parts address the
+*decompressed* chunk bytes, so a chunk file's header is stripped and its zlib
+body inflated before splicing.
 
-The parser is a faithful port of the layout the wider Epic tooling ecosystem
-documents, and its byte layout is pinned by a hand-built fixture in the tests
-rather than by a writer we also wrote, so the reader is checked against the
-specification. It has **not** been validated against a manifest from a real Fab
-account, and encrypted manifests (`stored_as & 0x2`) are rejected rather than
-guessed at. See the decision below.
+The one piece that is not automatic is the CDN base URL the chunk paths hang
+off: the manifest carries each chunk's relative path but not the host, and how
+Fab pairs a base with a manifest can only be confirmed against a real signed-in
+response, so `download` requires it as `--chunk-base`. `resolve` stops at
+printing the plan and needs no base.
+
+The manifest and chunk parsers are faithful ports of the layout the wider Epic
+tooling ecosystem documents, and their byte layouts are pinned by hand-built
+fixtures in the tests rather than by writers we also wrote, so the readers are
+checked against the specification. Neither has been validated against bytes from
+a real Fab account, and encrypted manifests and chunks (`stored_as & 0x2`) are
+rejected rather than guessed at. See the decision below.
 
 ### Format and quality selection (implemented, M2)
 
@@ -274,13 +296,16 @@ built and tested first.
 The parser then followed from the format the wider Epic tooling ecosystem
 documents, rather than being guessed at: its byte layout is pinned by a
 hand-built fixture written from that specification, not by a writer we also
-wrote, so the reader is checked against the spec instead of against itself. That
-is a weaker guarantee than a real manifest gives, and it is stated plainly
-rather than hidden: the parser is marked unvalidated against real Fab data, and
-a first run against a real manifest is a validation step. Encrypted manifests
-are rejected outright. This is the one place the project ships a reader it could
-not exercise end to end, and it says so in the module docs, the ROADMAP, and
-here.
+wrote, so the reader is checked against the spec instead of against itself. The
+chunk-file reader and the reassembler that follows it were built the same way,
+against the documented chunk layout. Both fixtures were additionally parsed with
+an independent reader from that ecosystem during development, which agreed with
+ours. That is still a weaker guarantee than real bytes give, and it is stated
+plainly rather than hidden: the readers are marked unvalidated against real Fab
+data, and a first run against a real manifest and chunks is a validation step.
+Encrypted manifests and chunks are rejected outright. This is the one place the
+project ships readers it could not exercise end to end, and it says so in the
+module docs, the ROADMAP, and here.
 
 ### Quality is matched by substring, not by a fixed tier list
 

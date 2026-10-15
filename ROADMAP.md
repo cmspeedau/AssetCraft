@@ -12,9 +12,10 @@ change as we learn. See [README.md](README.md) for what the project is.
   download-info endpoints are in. The OS keyring backend remains.
 - **M2 — Download Engine:** in progress. The transport engine (bounded
   concurrency, resumption, retries, integrity verification, a global bandwidth
-  limit) and the persistent queue are in, as is format and quality selection
-  over a listing's formats; resolving an owned asset into files needs the
-  binary manifest parser.
+  limit), the persistent queue, format and quality selection, and the binary
+  manifest parser that resolves an owned asset into the chunks and files to
+  fetch are all in; reassembling chunks into files, and the CDN base to fetch
+  them from, remain.
 - **M3 — Library:** in progress. A SQLite library backs offline browse, search,
   an integrity check, and a thumbnail cache; re-export from the library
   remains.
@@ -104,17 +105,19 @@ Get bytes on disk, reliably.
 - [x] Checksum and size verification on completion, in a `.part` file that is
       renamed into place only once it verifies.
 - [x] A persistent, de-duplicating download queue.
-- [ ] Resolve an owned asset into the files to fetch: parse Fab's signed binary
+- [x] Resolve an owned asset into the files to fetch: parse Fab's signed binary
       artifact manifest (Epic's chunked manifest format, magic `0x44BEC00C`).
 - [x] Quality-tier and format selection per asset.
 - [x] Global bandwidth limit.
 
 > **Ordering note.** The transport engine and the manifest parser were split.
 > The engine can be proven correct with tests against a local server; the
-> manifest parser can only be validated against a manifest from a real account,
-> so it follows once that is available. Format and quality selection sits
-> between them: it works over the format metadata the catalog already returns,
-> so it did not have to wait for the parser. See `docs/architecture.md`.
+> manifest parser was written from the format the wider Epic tooling ecosystem
+> documents and is pinned by a hand-built fixture, but it has not been validated
+> against a manifest from a real account, so a first run against real data is a
+> validation step. Format and quality selection sits between them: it works over
+> the format metadata the catalog already returns, so it did not have to wait for
+> the parser. See `docs/architecture.md`.
 
 **DoD:** A large asset can be downloaded, interrupted mid-transfer, resumed to
 completion, and verified — with no corruption.

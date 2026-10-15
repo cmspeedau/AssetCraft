@@ -15,17 +15,21 @@
 //!   transfer a [`Downloader`] runs.
 //! - **[`DownloadQueue`]**, an ordered, de-duplicating queue of
 //!   [`DownloadRequest`]s that can be persisted between runs.
+//! - **[`manifest`]**, a parser for Fab's signed binary artifact manifest, which
+//!   resolves an owned asset into the chunks to fetch and the files they make
+//!   up.
 //!
-//! What is **not** implemented yet: resolving an owned asset into the concrete
-//! files to fetch. Fab hands that back as a signed *binary* manifest (Epic's
-//! chunked manifest format, magic `0x44BEC00C`), whose parser can only be
-//! validated against a manifest from a real signed-in account. It is tracked as
-//! the next download-engine task in ROADMAP.md rather than guessed at here.
+//! What is **not** implemented yet: turning a parsed manifest's chunks into the
+//! bytes of its files. That needs the CDN base URL Fab pairs with the manifest
+//! and chunk decompression, and it is tracked as the next download-engine task
+//! in ROADMAP.md.
 
 pub mod bandwidth;
 pub mod engine;
+pub mod manifest;
 pub mod queue;
 
 pub use bandwidth::{BandwidthLimit, BandwidthLimiter};
 pub use engine::{DownloadFile, DownloadOptions, DownloadOutcome, Downloader, Progress};
+pub use manifest::{ChunkDownload, ChunkInfo, ChunkPart, FileEntry, Manifest, ManifestMeta};
 pub use queue::{DownloadQueue, DownloadRequest};

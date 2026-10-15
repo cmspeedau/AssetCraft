@@ -50,6 +50,10 @@ pub enum Error {
     #[error("no match: {0}")]
     NoMatch(String),
 
+    /// A binary manifest could not be parsed.
+    #[error("malformed manifest: {0}")]
+    Manifest(String),
+
     /// Anything else, with a human-readable explanation.
     #[error("{0}")]
     Other(String),

@@ -9,11 +9,14 @@ repository.workspace = true
 
 [dependencies]
 assetcraft-core.workspace = true
+flate2.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha1.workspace = true
 sha2.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 httpmock = "0.8"

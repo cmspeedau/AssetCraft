@@ -14,7 +14,7 @@ use assetcraft_core::{
     AssetFormat, AssetId, AssetSummary, Config, LibraryItem, Page, Preference, SearchQuery,
     SelectionCriteria, SortOrder,
 };
-use assetcraft_download::{BandwidthLimit, DownloadFile, DownloadOptions, Downloader};
+use assetcraft_download::{BandwidthLimit, DownloadFile, DownloadOptions, Downloader, Manifest};
 use assetcraft_library::{Library, MediaCache};
 
 /// Browse and download Megascans / Fab assets.
@@ -37,6 +37,8 @@ enum Command {
     Fetch(FetchArgs),
     /// List an asset's downloadable formats and files.
     Formats(FormatsArgs),
+    /// Resolve an owned asset into the chunks and files to fetch (requires sign-in).
+    Resolve(ResolveArgs),
     /// Inspect the catalog's taxonomy.
     Taxonomy(TaxonomyArgs),
 }
@@ -162,6 +164,30 @@ struct FormatsArgs {
     /// Asset id to inspect (as printed by `search`).
     asset_id: String,
 
+    #[command(flatten)]
+    select: SelectionArgs,
+
+    /// Print the raw JSON response instead of a summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct ResolveArgs {
+    /// Asset id to resolve (as printed by `search`).
+    asset_id: String,
+
+    #[command(flatten)]
+    select: SelectionArgs,
+
+    /// Also list every chunk that will be fetched.
+    #[arg(long)]
+    chunks: bool,
+}
+
+/// Selection flags shared by `formats` and `resolve`.
+#[derive(Debug, Args)]
+struct SelectionArgs {
     /// Only consider this format code, e.g. `fbx`.
     #[arg(long)]
     format: Option<String>,
@@ -181,10 +207,19 @@ struct FormatsArgs {
     /// How to choose among several matching files.
     #[arg(long, value_enum)]
     prefer: Option<PreferArg>,
+}
 
-    /// Print the raw JSON response instead of a summary.
-    #[arg(long)]
-    json: bool,
+impl SelectionArgs {
+    /// Build the selection criteria these flags describe.
+    fn criteria(&self) -> SelectionCriteria {
+        SelectionCriteria {
+            format: self.format.clone(),
+            quality: self.quality.clone(),
+            platform: self.platform.clone(),
+            engine_version: self.engine.clone(),
+            preference: self.prefer.map(Into::into).unwrap_or_default(),
+        }
+    }
 }
 
 /// Tie-breaks exposed on the command line.
@@ -235,6 +270,7 @@ async fn main() -> Result<()> {
         Command::Library(args) => library(&config, args).await,
         Command::Fetch(args) => fetch(args).await,
         Command::Formats(args) => formats(&config, args).await,
+        Command::Resolve(args) => resolve(&config, args).await,
         Command::Taxonomy(args) => taxonomy(&config, args).await,
     }
 }
@@ -500,15 +536,9 @@ async fn formats(config: &Config, args: FormatsArgs) -> Result<()> {
 
     print_formats(&formats);
 
-    let criteria = SelectionCriteria {
-        format: args.format,
-        quality: args.quality,
-        platform: args.platform,
-        engine_version: args.engine,
-        preference: args.prefer.map(Into::into).unwrap_or_default(),
-    };
+    let criteria = args.select.criteria();
     // Only report a choice when the caller asked for one.
-    if criteria.is_unconstrained() && args.prefer.is_none() {
+    if criteria.is_unconstrained() && args.select.prefer.is_none() {
         return Ok(());
     }
 
@@ -570,6 +600,111 @@ fn print_formats(formats: &[AssetFormat]) {
             }
         }
         println!();
+    }
+}
+
+/// Resolve an owned asset into the chunks and files Fab's manifest describes.
+///
+/// This composes the public format listing, the signed download info, and the
+/// binary manifest parser. It is the first end-to-end path from an asset id to
+/// "what to fetch"; reassembling the chunks into files is a later step.
+async fn resolve(config: &Config, args: ResolveArgs) -> Result<()> {
+    let client = FabClient::from_config(config)?;
+    let formats = client
+        .listing_formats(&AssetId::new(&args.asset_id))
+        .await
+        .context("could not load asset formats")?;
+
+    let criteria = args.select.criteria();
+    let chosen = assetcraft_core::select(&formats, &criteria).context("selection failed")?;
+    let format_code = chosen
+        .format_code
+        .clone()
+        .context("the selected format has no code to request download info with")?;
+    let file_id = chosen
+        .file_id()
+        .map(str::to_string)
+        .context("the selected file has no id to request download info with")?;
+
+    println!("Format:   {format_code}");
+    println!(
+        "File:     {} ({file_id})",
+        chosen.file.name.as_deref().unwrap_or("-")
+    );
+
+    let info = client
+        .download_info(&args.asset_id, &format_code, &file_id)
+        .await
+        .context("could not resolve download info")?;
+    println!("Artifact: {}", info.artifact_id);
+    if info.distribution_points.is_empty() {
+        anyhow::bail!("Fab returned no distribution points for this file");
+    }
+
+    // Distribution points are mirrors; use the first one whose manifest parses.
+    let mut last_error = None;
+    for point in &info.distribution_points {
+        let bytes = match client.fetch_bytes(&point.manifest_url).await {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                last_error = Some(anyhow::Error::new(err).context("manifest could not be fetched"));
+                continue;
+            }
+        };
+        match Manifest::parse(&bytes) {
+            Ok(manifest) => {
+                print_manifest(&manifest, args.chunks);
+                return Ok(());
+            }
+            Err(err) => {
+                last_error = Some(anyhow::Error::new(err).context("manifest could not be parsed"));
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no distribution point produced a manifest")))
+}
+
+fn print_manifest(manifest: &Manifest, show_chunks: bool) {
+    println!();
+    println!("Manifest version {}", manifest.version);
+    if !manifest.meta.app_name.is_empty() {
+        println!("  app: {}", manifest.meta.app_name);
+    }
+    if !manifest.meta.build_version.is_empty() {
+        println!("  build: {}", manifest.meta.build_version);
+    }
+    println!(
+        "  chunks: {} ({} bytes to download)",
+        manifest.chunks.len(),
+        manifest.total_download_size()
+    );
+    println!(
+        "  files: {} ({} bytes installed)",
+        manifest.files.len(),
+        manifest.total_install_size()
+    );
+
+    if show_chunks {
+        println!();
+        println!("Chunks:");
+        for chunk in &manifest.chunks {
+            println!(
+                "  {}  {} bytes",
+                chunk.relative_path(manifest.meta.feature_level),
+                chunk.file_size.max(0)
+            );
+        }
+    }
+
+    println!();
+    println!("Files:");
+    for file in &manifest.files {
+        let executable = if file.is_executable() {
+            " (executable)"
+        } else {
+            ""
+        };
+        println!("  {}  {} bytes{executable}", file.filename, file.size);
     }
 }
 

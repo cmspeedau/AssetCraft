@@ -101,7 +101,7 @@ headless CLI.
 | `assetcraft-core` | lib | Domain model, traits, configuration, and error types. |
 | `assetcraft-auth` | lib | Epic/Fab OAuth device flow and secure token storage (OS keyring). |
 | `assetcraft-catalog` | lib | Fab API client: search, filters, metadata, and response cache. |
-| `assetcraft-download` | lib | Concurrent, resumable download engine with integrity checks. |
+| `assetcraft-download` | lib | Concurrent, resumable download engine with integrity checks and manifest parsing. |
 | `assetcraft-library` | lib | Local SQLite library index, thumbnails, dedup, offline browse. |
 | `assetcraft-dcc-blender` | adapter | Blender exporter and Python addon bridge. |
 | `assetcraft-cli` | bin | Headless binary for scripted / CI workflows. |
@@ -160,6 +160,9 @@ assetcraft taxonomy tags
 # Inspect an asset's formats, and pick the file you want
 assetcraft formats <asset-id>
 assetcraft formats <asset-id> --format fbx --quality 4K --prefer largest
+
+# Resolve an owned asset into the chunks and files to fetch (requires sign-in)
+assetcraft resolve <asset-id> --format fbx --quality 4K --chunks
 
 # Sync the assets you own into the local library (requires sign-in)
 assetcraft library

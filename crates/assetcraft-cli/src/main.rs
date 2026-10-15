@@ -3,12 +3,15 @@
 //! This is the headless entry point to the same engine the desktop app will
 //! use. For M1 it covers the read side of the catalog plus sign-in.
 
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use assetcraft_auth::{ensure_fresh_token, EpicAuth, FileTokenStore, TokenStore};
 use assetcraft_catalog::FabClient;
 use assetcraft_core::{AssetSummary, Config, LibraryItem, Page, SearchQuery, SortOrder};
+use assetcraft_download::{DownloadFile, DownloadOptions, Downloader};
 
 /// Browse and download Megascans / Fab assets.
 #[derive(Debug, Parser)]
@@ -26,6 +29,8 @@ enum Command {
     Login(LoginArgs),
     /// List the assets in your Fab library (requires sign-in).
     Library(LibraryArgs),
+    /// Download a single file, resuming and verifying as it goes.
+    Fetch(FetchArgs),
     /// Inspect the catalog's taxonomy.
     Taxonomy(TaxonomyArgs),
 }
@@ -105,6 +110,28 @@ struct LibraryArgs {
 }
 
 #[derive(Debug, Args)]
+struct FetchArgs {
+    /// URL to download.
+    url: String,
+
+    /// Where to write the file.
+    #[arg(long, short)]
+    output: PathBuf,
+
+    /// Expected size in bytes; a mismatch is a failure.
+    #[arg(long)]
+    size: Option<u64>,
+
+    /// Expected SHA-256 (hex); a mismatch is a failure.
+    #[arg(long)]
+    sha256: Option<String>,
+
+    /// Total attempts per file, including the first.
+    #[arg(long, default_value_t = 3)]
+    attempts: u32,
+}
+
+#[derive(Debug, Args)]
 struct TaxonomyArgs {
     #[command(subcommand)]
     which: TaxonomyCommand,
@@ -132,6 +159,7 @@ async fn main() -> Result<()> {
         Command::Search(args) => search(&config, args).await,
         Command::Login(args) => login(&config, args).await,
         Command::Library(args) => library(&config, args).await,
+        Command::Fetch(args) => fetch(args).await,
         Command::Taxonomy(args) => taxonomy(&config, args).await,
     }
 }
@@ -209,6 +237,41 @@ async fn library(config: &Config, args: LibraryArgs) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&page)?);
     } else {
         print_library(&page);
+    }
+    Ok(())
+}
+
+async fn fetch(args: FetchArgs) -> Result<()> {
+    let options = DownloadOptions {
+        max_attempts: args.attempts,
+        ..Default::default()
+    };
+    let downloader = Downloader::with_default_client(options)?;
+    let file = DownloadFile {
+        url: args.url,
+        destination: args.output,
+        size: args.size,
+        sha256: args.sha256,
+    };
+
+    let outcome = downloader
+        .download(&file)
+        .await
+        .context("download failed")?;
+
+    println!(
+        "Downloaded {} bytes to {}",
+        outcome.bytes,
+        outcome.destination.display()
+    );
+    if outcome.resumed_from > 0 {
+        println!(
+            "Resumed from {} bytes already on disk.",
+            outcome.resumed_from
+        );
+    }
+    if outcome.attempts > 1 {
+        println!("Succeeded on attempt {}.", outcome.attempts);
     }
     Ok(())
 }

@@ -16,6 +16,7 @@ anyhow.workspace = true
 assetcraft-auth.workspace = true
 assetcraft-catalog.workspace = true
 assetcraft-core.workspace = true
+assetcraft-download.workspace = true
 clap.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

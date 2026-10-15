@@ -97,6 +97,40 @@ EpicToken                               access + refresh, with an absolute expir
 FileTokenStore::save()                  owner-only (0600) JSON file
 ```
 
+### Download (implemented, M2, minus asset resolution)
+
+```
+DownloadFile { url, destination, size?, sha256? }
+        │
+        ▼
+Downloader::download_all(files, on_progress)
+        │   at most `concurrency` transfers in flight (a semaphore)
+        ▼
+per file: attempt loop (up to `max_attempts`)
+        │
+        ├─ .part exists? ──▶ GET with  Range: bytes=<len>-
+        │                       ├─ 206 ──▶ append, hashing the prefix first
+        │                       └─ 200 ──▶ server ignored the range; restart
+        │
+        ├─ 429/5xx/timeout ──▶ sleep base·2ⁿ (capped) and retry
+        ├─ other non-2xx    ──▶ fail immediately
+        │
+        ▼
+verify size and SHA-256 ──▶ rename .part → destination (atomic)
+```
+
+Two invariants make this safe: work happens in a `.part` file so the
+destination is never half-written, and a `.part` file is always a *prefix* of
+the target, which is what makes resuming sound. A checksum mismatch deletes the
+part file, because a corrupt file that survives would be resumed from and
+reported as complete.
+
+What is missing from the flow is the step before it: turning an owned asset into
+a `DownloadFile` list. Fab returns that as a signed **binary** manifest (Epic's
+chunked manifest format, magic `0x44BEC00C`), and that parser is tracked as the
+next download-engine task rather than guessed at, because it can only be
+validated against a manifest from a real signed-in account.
+
 ## Decisions
 
 ### We own the catalog client rather than wrapping `egs-api`
@@ -145,6 +179,16 @@ tools.
 `ResponseCache` keys entries by a dependency-free FNV-1a hash of the request URL
 and stores the URL inside the entry. On read it verifies the stored URL matches,
 so a hash collision degrades to a cache miss rather than serving the wrong body.
+
+### The download engine is built before asset resolution
+
+An asset's files arrive as a binary manifest, and parsing it correctly can only
+be confirmed against a manifest produced by a real account. The transport engine
+— concurrency, resumption, retries, integrity — has no such dependency: it can
+be proven correct here, with tests, against a local server. So the engine is
+built and tested first, and asset resolution is added when it can be validated
+against real data. Shipping a binary parser validated only by its own writer
+would be a claim we could not stand behind.
 
 ## Endpoint reference
 

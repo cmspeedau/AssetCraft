@@ -9,7 +9,15 @@ repository.workspace = true
 
 [dependencies]
 assetcraft-core.workspace = true
+reqwest.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+httpmock = "0.8"
+tempfile = "3"
 
 [lints]
 workspace = true

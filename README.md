@@ -159,6 +159,9 @@ assetcraft taxonomy tags
 
 # List the assets you own (requires sign-in)
 assetcraft library
+
+# Fetch a single file, resuming and verifying as it goes
+assetcraft fetch https://example.com/asset.zip --output asset.zip --sha256 <hash>
 ```
 
 Still to come (see [ROADMAP.md](ROADMAP.md)):

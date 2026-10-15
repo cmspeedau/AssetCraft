@@ -10,6 +10,9 @@ change as we learn. See [README.md](README.md) for what the project is.
 - **M1 — Catalog & Auth:** in progress. Public catalog reads, sign-in, token
   storage and refresh, the response cache, and the authenticated library and
   download-info endpoints are in. The OS keyring backend remains.
+- **M2 — Download Engine:** in progress. The transport engine (bounded
+  concurrency, resumption, retries, integrity verification) and the persistent
+  queue are in; resolving an asset into files needs the binary manifest parser.
 
 ## Vision
 
@@ -88,12 +91,23 @@ lists real results with metadata against the live Fab API.
 
 Get bytes on disk, reliably.
 
-- [ ] Concurrent downloads with a bounded worker pool.
-- [ ] Resumable transfers; partial state survives restarts.
-- [ ] Retry with exponential backoff and clear failure reporting.
+- [x] Concurrent downloads with a bounded worker pool.
+- [x] Resumable transfers: a partial file is a prefix, resumed with a range
+      request, and survives a restart.
+- [x] Retry with exponential backoff, capped, and clear failure reporting.
+      Client errors are not retried.
+- [x] Checksum and size verification on completion, in a `.part` file that is
+      renamed into place only once it verifies.
+- [x] A persistent, de-duplicating download queue.
+- [ ] Resolve an owned asset into the files to fetch: parse Fab's signed binary
+      artifact manifest (Epic's chunked manifest format, magic `0x44BEC00C`).
 - [ ] Quality-tier and format selection per asset.
-- [ ] Checksum/integrity verification on completion.
-- [ ] Global bandwidth limit and a persistent queue.
+- [ ] Global bandwidth limit.
+
+> **Ordering note.** The transport engine and the manifest parser were split.
+> The engine can be proven correct with tests against a local server; the
+> manifest parser can only be validated against a manifest from a real account,
+> so it follows once that is available. See `docs/architecture.md`.
 
 **DoD:** A large asset can be downloaded, interrupted mid-transfer, resumed to
 completion, and verified — with no corruption.

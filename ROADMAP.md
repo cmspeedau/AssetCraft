@@ -12,8 +12,9 @@ change as we learn. See [README.md](README.md) for what the project is.
   download-info endpoints are in. The OS keyring backend remains.
 - **M2 — Download Engine:** in progress. The transport engine (bounded
   concurrency, resumption, retries, integrity verification, a global bandwidth
-  limit) and the persistent queue are in; resolving an asset into files needs
-  the binary manifest parser.
+  limit) and the persistent queue are in, as is format and quality selection
+  over a listing's formats; resolving an owned asset into files needs the
+  binary manifest parser.
 - **M3 — Library:** in progress. A SQLite library backs offline browse, search,
   an integrity check, and a thumbnail cache; re-export from the library
   remains.
@@ -105,13 +106,15 @@ Get bytes on disk, reliably.
 - [x] A persistent, de-duplicating download queue.
 - [ ] Resolve an owned asset into the files to fetch: parse Fab's signed binary
       artifact manifest (Epic's chunked manifest format, magic `0x44BEC00C`).
-- [ ] Quality-tier and format selection per asset.
+- [x] Quality-tier and format selection per asset.
 - [x] Global bandwidth limit.
 
 > **Ordering note.** The transport engine and the manifest parser were split.
 > The engine can be proven correct with tests against a local server; the
 > manifest parser can only be validated against a manifest from a real account,
-> so it follows once that is available. See `docs/architecture.md`.
+> so it follows once that is available. Format and quality selection sits
+> between them: it works over the format metadata the catalog already returns,
+> so it did not have to wait for the parser. See `docs/architecture.md`.
 
 **DoD:** A large asset can be downloaded, interrupted mid-transfer, resumed to
 completion, and verified — with no corruption.

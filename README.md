@@ -157,6 +157,10 @@ assetcraft search "rock cliff" --type surface --limit 20
 assetcraft taxonomy licenses
 assetcraft taxonomy tags
 
+# Inspect an asset's formats, and pick the file you want
+assetcraft formats <asset-id>
+assetcraft formats <asset-id> --format fbx --quality 4K --prefer largest
+
 # Sync the assets you own into the local library (requires sign-in)
 assetcraft library
 

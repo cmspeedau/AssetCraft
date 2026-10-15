@@ -46,6 +46,10 @@ pub enum Error {
     #[error("invalid configuration: {0}")]
     Config(String),
 
+    /// A requested format or file could not be found for an asset.
+    #[error("no match: {0}")]
+    NoMatch(String),
+
     /// Anything else, with a human-readable explanation.
     #[error("{0}")]
     Other(String),

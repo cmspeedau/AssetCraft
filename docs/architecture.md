@@ -32,7 +32,7 @@ rather than a change to the engine.
 
 | Crate | Kind | Responsibility | Milestone |
 | --- | --- | --- | --- |
-| `assetcraft-core` | lib | Domain model, config, error type | M0 |
+| `assetcraft-core` | lib | Domain model, config, error type, selection | M0 |
 | `assetcraft-catalog` | lib | Fab API client and response cache | M1 |
 | `assetcraft-auth` | lib | Epic OAuth and token storage | M1 |
 | `assetcraft-download` | lib | Download queue and transfer engine | M2 |
@@ -138,6 +138,27 @@ chunked manifest format, magic `0x44BEC00C`), and that parser is tracked as the
 next download-engine task rather than guessed at, because it can only be
 validated against a manifest from a real signed-in account.
 
+### Format and quality selection (implemented, M2)
+
+```
+assetcraft formats <id> --format fbx --quality 4K --prefer largest
+        │
+        ▼
+FabClient::listing_formats(&id)        GET /i/listings/{id}/asset-formats (no auth)
+        │
+        ▼
+convert::formats_from_wire             AssetFormat { format_type, files }
+        │
+        ▼
+core::select(&formats, &criteria)      pure: filter by code, quality text, platform, engine
+        │
+        ▼
+Selection { format_code, format_name, file }
+```
+
+The chosen `file.id` is exactly what a download request needs; the step that
+turns it into bytes is the manifest parser above.
+
 ### Library (implemented, M3)
 
 ```
@@ -217,6 +238,18 @@ be proven correct here, with tests, against a local server. So the engine is
 built and tested first, and asset resolution is added when it can be validated
 against real data. Shipping a binary parser validated only by its own writer
 would be a claim we could not stand behind.
+
+### Quality is matched by substring, not by a fixed tier list
+
+A Megascans listing carries its quality tier in a file's name or asset type
+(`…_4K.zip`, `High`), and the wording differs between sellers, so hard-coding a
+tier vocabulary would encode guesses about data we have not seen. Selection
+instead matches the requested quality as a case-insensitive substring of those
+two fields, and platform and engine version as case-insensitive equality against
+the file's lists. `--prefer largest|smallest` breaks ties by reported size, with
+an unknown size ranked last in either direction. The result is the `file.id` a
+download request needs; it is deliberately not a claim about what the tiers are
+called.
 
 ### The bandwidth limit is a token bucket that may go into debt
 

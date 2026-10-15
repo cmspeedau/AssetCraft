@@ -10,7 +10,10 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use assetcraft_auth::{ensure_fresh_token, EpicAuth, FileTokenStore, TokenStore};
 use assetcraft_catalog::{FabClient, ResponseCache, DEFAULT_TTL};
-use assetcraft_core::{AssetSummary, Config, LibraryItem, Page, SearchQuery, SortOrder};
+use assetcraft_core::{
+    AssetFormat, AssetId, AssetSummary, Config, LibraryItem, Page, Preference, SearchQuery,
+    SelectionCriteria, SortOrder,
+};
 use assetcraft_download::{BandwidthLimit, DownloadFile, DownloadOptions, Downloader};
 use assetcraft_library::{Library, MediaCache};
 
@@ -32,6 +35,8 @@ enum Command {
     Library(LibraryArgs),
     /// Download a single file, resuming and verifying as it goes.
     Fetch(FetchArgs),
+    /// List an asset's downloadable formats and files.
+    Formats(FormatsArgs),
     /// Inspect the catalog's taxonomy.
     Taxonomy(TaxonomyArgs),
 }
@@ -153,6 +158,54 @@ struct FetchArgs {
 }
 
 #[derive(Debug, Args)]
+struct FormatsArgs {
+    /// Asset id to inspect (as printed by `search`).
+    asset_id: String,
+
+    /// Only consider this format code, e.g. `fbx`.
+    #[arg(long)]
+    format: Option<String>,
+
+    /// Only consider files whose name or asset type contains this text, e.g. `4K`.
+    #[arg(long)]
+    quality: Option<String>,
+
+    /// Only consider files that support this platform, e.g. `Windows`.
+    #[arg(long)]
+    platform: Option<String>,
+
+    /// Only consider files that support this engine version, e.g. `5.4`.
+    #[arg(long)]
+    engine: Option<String>,
+
+    /// How to choose among several matching files.
+    #[arg(long, value_enum)]
+    prefer: Option<PreferArg>,
+
+    /// Print the raw JSON response instead of a summary.
+    #[arg(long)]
+    json: bool,
+}
+
+/// Tie-breaks exposed on the command line.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PreferArg {
+    First,
+    Largest,
+    Smallest,
+}
+
+impl From<PreferArg> for Preference {
+    fn from(value: PreferArg) -> Self {
+        match value {
+            PreferArg::First => Preference::First,
+            PreferArg::Largest => Preference::Largest,
+            PreferArg::Smallest => Preference::Smallest,
+        }
+    }
+}
+
+#[derive(Debug, Args)]
 struct TaxonomyArgs {
     #[command(subcommand)]
     which: TaxonomyCommand,
@@ -181,6 +234,7 @@ async fn main() -> Result<()> {
         Command::Login(args) => login(&config, args).await,
         Command::Library(args) => library(&config, args).await,
         Command::Fetch(args) => fetch(args).await,
+        Command::Formats(args) => formats(&config, args).await,
         Command::Taxonomy(args) => taxonomy(&config, args).await,
     }
 }
@@ -430,6 +484,93 @@ fn parse_rate(raw: &str) -> Result<u64, String> {
         .and_then(|n| n.checked_mul(multiplier))
         .filter(|n| *n > 0)
         .ok_or_else(|| format!("`{raw}` is not a rate like `500k` or `2M`"))
+}
+
+async fn formats(config: &Config, args: FormatsArgs) -> Result<()> {
+    let client = FabClient::from_config(config)?;
+    let formats = client
+        .listing_formats(&AssetId::new(&args.asset_id))
+        .await
+        .context("could not load asset formats")?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&formats)?);
+        return Ok(());
+    }
+
+    print_formats(&formats);
+
+    let criteria = SelectionCriteria {
+        format: args.format,
+        quality: args.quality,
+        platform: args.platform,
+        engine_version: args.engine,
+        preference: args.prefer.map(Into::into).unwrap_or_default(),
+    };
+    // Only report a choice when the caller asked for one.
+    if criteria.is_unconstrained() && args.prefer.is_none() {
+        return Ok(());
+    }
+
+    let chosen = assetcraft_core::select(&formats, &criteria).context("selection failed")?;
+    let label = chosen
+        .format_name
+        .as_deref()
+        .or(chosen.format_code.as_deref())
+        .unwrap_or("-");
+    println!();
+    println!("Selected: {label}");
+    match chosen.file_id() {
+        Some(id) => println!("  file id: {id}"),
+        None => println!("  file id: (none reported)"),
+    }
+    if let Some(name) = chosen.file.name.as_deref() {
+        println!("  name: {name}");
+    }
+    if let Some(size) = chosen.file.size_bytes {
+        println!("  size: {size} bytes");
+    }
+    Ok(())
+}
+
+fn print_formats(formats: &[AssetFormat]) {
+    if formats.is_empty() {
+        println!("No downloadable formats reported for this asset.");
+        return;
+    }
+    for format in formats {
+        let code = format.code().unwrap_or("-");
+        let name = format
+            .format_type
+            .as_ref()
+            .and_then(|kind| kind.name.as_deref())
+            .unwrap_or(code);
+        println!("{name} ({code})");
+        if format.files.is_empty() {
+            println!("  (no files)");
+        }
+        for file in &format.files {
+            let id = file.id.as_deref().unwrap_or("-");
+            let size = match file.size_bytes {
+                Some(bytes) => format!("{bytes} bytes"),
+                None => "size unknown".to_string(),
+            };
+            println!("  {id}  {size}");
+            if let Some(file_name) = file.name.as_deref() {
+                println!("    name: {file_name}");
+            }
+            if let Some(asset_type) = file.asset_type.as_deref() {
+                println!("    type: {asset_type}");
+            }
+            if !file.platforms.is_empty() {
+                println!("    platforms: {}", file.platforms.join(", "));
+            }
+            if !file.engine_versions.is_empty() {
+                println!("    engine: {}", file.engine_versions.join(", "));
+            }
+        }
+        println!();
+    }
 }
 
 async fn taxonomy(config: &Config, args: TaxonomyArgs) -> Result<()> {

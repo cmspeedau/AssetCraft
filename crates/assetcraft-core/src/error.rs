@@ -38,6 +38,10 @@ pub enum Error {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Local database trouble (opening, querying, or a corrupt library).
+    #[error("database error: {0}")]
+    Database(String),
+
     /// The configuration could not be determined or was invalid.
     #[error("invalid configuration: {0}")]
     Config(String),

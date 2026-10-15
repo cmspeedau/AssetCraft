@@ -28,6 +28,12 @@ struct Entry {
     body: String,
 }
 
+/// A sensible default lifetime for a cached API response.
+///
+/// Long enough that browsing a catalog twice is cheap, short enough that a
+/// listing that changed today is not stale for long.
+pub const DEFAULT_TTL: Duration = Duration::seconds(1800);
+
 /// A time-limited, on-disk cache of response bodies keyed by URL.
 #[derive(Debug, Clone)]
 pub struct ResponseCache {

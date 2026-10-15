@@ -52,6 +52,16 @@ impl Paths {
     pub fn token_file(&self) -> PathBuf {
         self.config_dir.join("token.json")
     }
+
+    /// The SQLite database holding the local asset library.
+    pub fn library_file(&self) -> PathBuf {
+        self.data_dir.join("library.sqlite")
+    }
+
+    /// Where cached API responses live.
+    pub fn response_cache_dir(&self) -> PathBuf {
+        self.cache_dir.join("api")
+    }
 }
 
 /// Everything needed to talk to the outside world and to store local state.
@@ -122,6 +132,14 @@ mod tests {
         assert_eq!(
             paths.token_file(),
             PathBuf::from("/tmp/assetcraft-test/config/token.json")
+        );
+        assert_eq!(
+            paths.library_file(),
+            PathBuf::from("/tmp/assetcraft-test/data/library.sqlite")
+        );
+        assert_eq!(
+            paths.response_cache_dir(),
+            PathBuf::from("/tmp/assetcraft-test/cache/api")
         );
     }
 

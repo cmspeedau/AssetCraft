@@ -9,9 +9,10 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use assetcraft_auth::{ensure_fresh_token, EpicAuth, FileTokenStore, TokenStore};
-use assetcraft_catalog::FabClient;
+use assetcraft_catalog::{FabClient, ResponseCache, DEFAULT_TTL};
 use assetcraft_core::{AssetSummary, Config, LibraryItem, Page, SearchQuery, SortOrder};
 use assetcraft_download::{DownloadFile, DownloadOptions, Downloader};
+use assetcraft_library::Library;
 
 /// Browse and download Megascans / Fab assets.
 #[derive(Debug, Parser)]
@@ -67,6 +68,10 @@ struct SearchArgs {
     /// Print the raw JSON response instead of a summary.
     #[arg(long)]
     json: bool,
+
+    /// Ignore the on-disk response cache and fetch fresh results.
+    #[arg(long)]
+    no_cache: bool,
 }
 
 /// Sort orders exposed on the command line.
@@ -100,11 +105,19 @@ struct LoginArgs {
 
 #[derive(Debug, Args)]
 struct LibraryArgs {
-    /// Continue from a cursor printed by a previous listing.
+    /// Browse the local library without contacting Fab.
     #[arg(long)]
-    cursor: Option<String>,
+    offline: bool,
 
-    /// Print the raw JSON response instead of a summary.
+    /// Search titles in the local library.
+    #[arg(long)]
+    search: Option<String>,
+
+    /// Check the local library for unreadable entries and exit.
+    #[arg(long)]
+    verify: bool,
+
+    /// Print JSON instead of a summary.
     #[arg(long)]
     json: bool,
 }
@@ -165,7 +178,13 @@ async fn main() -> Result<()> {
 }
 
 async fn search(config: &Config, args: SearchArgs) -> Result<()> {
-    let client = FabClient::from_config(config)?;
+    let mut client = FabClient::from_config(config)?;
+    if !args.no_cache {
+        client = client.with_cache(ResponseCache::new(
+            config.paths.response_cache_dir(),
+            DEFAULT_TTL,
+        ));
+    }
     let query = SearchQuery {
         text: args.query,
         listing_types: args.listing_types,
@@ -217,6 +236,47 @@ async fn login(config: &Config, args: LoginArgs) -> Result<()> {
 }
 
 async fn library(config: &Config, args: LibraryArgs) -> Result<()> {
+    let library =
+        Library::open(config.paths.library_file()).context("could not open the local library")?;
+
+    if args.verify {
+        let report = library.verify().context("could not check the library")?;
+        if report.is_healthy() {
+            println!("{} assets, all readable.", report.total);
+            return Ok(());
+        }
+        println!(
+            "{} assets, {} unreadable:",
+            report.total,
+            report.unreadable.len()
+        );
+        for row in &report.unreadable {
+            println!("  {}: {}", row.id, row.problem);
+        }
+        anyhow::bail!("the local library has unreadable entries");
+    }
+
+    if let Some(needle) = args.search.as_deref() {
+        let items = library.search(needle).context("search failed")?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&items)?);
+        } else {
+            print_library_items(&items);
+        }
+        return Ok(());
+    }
+
+    if args.offline {
+        let items = library.list_all().context("could not read the library")?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&items)?);
+        } else {
+            print_library_items(&items);
+        }
+        return Ok(());
+    }
+
+    // Online: pull the whole library from Fab and record it locally.
     let auth = EpicAuth::from_config(config)?;
     let store = FileTokenStore::new(config.paths.token_file());
     let token = ensure_fresh_token(&auth, &store)
@@ -228,15 +288,39 @@ async fn library(config: &Config, args: LibraryArgs) -> Result<()> {
         .context("the stored token has no account id; run `assetcraft login` again")?;
 
     let client = FabClient::from_config(config)?.with_token(token.authorization_header());
-    let page = client
-        .library(&account_id, args.cursor.as_deref())
-        .await
-        .context("could not load your Fab library")?;
 
+    let mut fetched = 0usize;
+    let mut added = 0usize;
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = client
+            .library(&account_id, cursor.as_deref())
+            .await
+            .context("could not load your Fab library")?;
+        fetched += page.items.len();
+        for item in &page.items {
+            if library.insert(item).context("could not store an asset")? {
+                added += 1;
+            }
+        }
+        // Stop when the server offers no further cursor, or repeats an empty
+        // page, so a misbehaving cursor cannot spin forever.
+        match page.next_cursor {
+            Some(next) if !page.items.is_empty() => cursor = Some(next),
+            _ => break,
+        }
+    }
+
+    println!(
+        "Fetched {fetched} assets ({added} new). The local library holds {} assets.\n",
+        library.len()?
+    );
+
+    let items = library.list_all().context("could not read the library")?;
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&page)?);
+        println!("{}", serde_json::to_string_pretty(&items)?);
     } else {
-        print_library(&page);
+        print_library_items(&items);
     }
     Ok(())
 }
@@ -338,10 +422,10 @@ fn print_page(page: &Page<AssetSummary>) {
     }
 }
 
-fn print_library(page: &Page<LibraryItem>) {
-    println!("{} assets in your library\n", page.items.len());
+fn print_library_items(items: &[LibraryItem]) {
+    println!("{} assets in your library\n", items.len());
 
-    for item in &page.items {
+    for item in items {
         let title = if item.title.is_empty() {
             item.asset_id.as_str()
         } else {
@@ -364,9 +448,5 @@ fn print_library(page: &Page<LibraryItem>) {
             println!("  categories: {}", categories.join(", "));
         }
         println!();
-    }
-
-    if let Some(cursor) = &page.next_cursor {
-        println!("Next page: assetcraft library --cursor {cursor}");
     }
 }

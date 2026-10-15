@@ -36,7 +36,7 @@ use assetcraft_core::{
     LibraryItem, LicenseType, Page, Result, SearchQuery, TagGroup,
 };
 
-pub use cache::ResponseCache;
+pub use cache::{ResponseCache, DEFAULT_TTL};
 
 /// A client for the Fab catalog and library endpoints.
 #[derive(Debug, Clone)]

@@ -13,6 +13,8 @@ change as we learn. See [README.md](README.md) for what the project is.
 - **M2 — Download Engine:** in progress. The transport engine (bounded
   concurrency, resumption, retries, integrity verification) and the persistent
   queue are in; resolving an asset into files needs the binary manifest parser.
+- **M3 — Library:** in progress. A SQLite library backs offline browse, search,
+  and an integrity check; thumbnails and re-export from the library remain.
 
 ## Vision
 
@@ -116,11 +118,15 @@ completion, and verified — with no corruption.
 
 Own what you have, even offline.
 
-- [ ] SQLite-backed local library index.
-- [ ] Deduplication by asset ID; re-download and re-export from the library.
+- [x] SQLite-backed local library index.
+- [x] De-duplication by asset id: syncing the same asset twice is a no-op.
+- [x] Offline browse of cached metadata (`assetcraft library --offline`,
+      `assetcraft library --search <text>`).
+- [x] Library integrity check (`assetcraft library --verify`).
 - [ ] Thumbnail and preview cache.
-- [ ] Offline browse of cached metadata and downloaded assets.
-- [ ] Library integrity check / repair command.
+- [ ] Re-download and re-export straight from the library (needs M2 asset
+      resolution and the M4 exporter).
+- [ ] Repair damaged entries, rather than only reporting them.
 
 **DoD:** With the network disabled, previously downloaded assets are fully
 browsable and re-exportable.

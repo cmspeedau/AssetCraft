@@ -131,6 +131,22 @@ chunked manifest format, magic `0x44BEC00C`), and that parser is tracked as the
 next download-engine task rather than guessed at, because it can only be
 validated against a manifest from a real signed-in account.
 
+### Library (implemented, M3)
+
+```
+assetcraft library                    ──▶ fetch every page from /e/accounts/{id}/ue/library
+                                            │
+                                            ▼
+                                     Library::insert(item)   INSERT OR IGNORE, so a repeat is a no-op
+                                            │
+                                            ▼
+                                     library.sqlite          JSON item + denormalised title
+                                            │
+              assetcraft library --offline ──┤
+             assetcraft library --search q ──┤── SELECT … ORDER BY title
+              assetcraft library --verify  ──┴── read every item back and report what fails
+```
+
 ## Decisions
 
 ### We own the catalog client rather than wrapping `egs-api`
@@ -189,6 +205,18 @@ be proven correct here, with tests, against a local server. So the engine is
 built and tested first, and asset resolution is added when it can be validated
 against real data. Shipping a binary parser validated only by its own writer
 would be a claim we could not stand behind.
+
+### The library stores an item as JSON, with one denormalised column
+
+The `assets` table holds the whole `LibraryItem` as JSON, plus a copy of the
+title. The JSON is the source of truth, so adding a field to the domain model
+cannot silently drop data that is already stored — either the item reads back
+exactly, or `verify` reports the row. The title is duplicated only because it is
+what we sort and search on, and SQLite can index and order a column but not a
+JSON path as cheaply.
+
+Search uses `instr(lower(title), …)` rather than `LIKE`, so a query containing
+`%` or `_` matches those characters literally instead of acting as a wildcard.
 
 ## Endpoint reference
 

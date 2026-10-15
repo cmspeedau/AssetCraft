@@ -157,8 +157,13 @@ assetcraft search "rock cliff" --type surface --limit 20
 assetcraft taxonomy licenses
 assetcraft taxonomy tags
 
-# List the assets you own (requires sign-in)
+# Sync the assets you own into the local library (requires sign-in)
 assetcraft library
+
+# Browse it offline, search it, or check it for damage
+assetcraft library --offline
+assetcraft library --search "rock"
+assetcraft library --verify
 
 # Fetch a single file, resuming and verifying as it goes
 assetcraft fetch https://example.com/asset.zip --output asset.zip --sha256 <hash>

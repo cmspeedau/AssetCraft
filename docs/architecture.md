@@ -228,13 +228,22 @@ assetcraft library                    ──▶ fetch every page from /e/account
                                             │
               assetcraft library --offline ──┤
              assetcraft library --search q ──┤── SELECT … ORDER BY title
-              assetcraft library --verify  ──┴── read every item back and report what fails
+              assetcraft library --verify  ──┤── read every item back and report what fails
+             assetcraft library --repair   ──┴── realign stale titles, drop unreadable rows
 ```
 
 Media is cached beside the index, not inside it. `assetcraft library
 --thumbnails` fetches each item's thumbnail through the catalog client and
 stores it in a content-addressed `MediaCache`, so offline browsing points at a
 local file rather than a URL.
+
+`Library::verify` only reports damage; `Library::repair` acts on it offline. A
+row whose item reads back is kept and its denormalised `title` is realigned with
+the item it was derived from, since the title is rebuilt only on insert. A row
+whose item can no longer be parsed is dropped from the `assets` table — it can
+never be shown, searched, or re-exported — but its `downloads` record is left in
+place: the files are still on disk, and a later `assetcraft library` sync restores
+the metadata row.
 
 ### Blender export (implemented, M4)
 

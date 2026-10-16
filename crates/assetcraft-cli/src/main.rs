@@ -130,6 +130,10 @@ struct LibraryArgs {
     #[arg(long)]
     verify: bool,
 
+    /// Repair the local library: realign stale titles, drop unreadable rows.
+    #[arg(long)]
+    repair: bool,
+
     /// Cache thumbnails for the local library so it browses offline.
     #[arg(long)]
     thumbnails: bool,
@@ -435,6 +439,30 @@ async fn library(config: &Config, args: LibraryArgs) -> Result<()> {
             println!("  {}: {}", row.id, row.problem);
         }
         anyhow::bail!("the local library has unreadable entries");
+    }
+
+    if args.repair {
+        let report = library.repair().context("could not repair the library")?;
+        if report.titles_repaired > 0 {
+            println!("Realigned {} stale title(s).", report.titles_repaired);
+        }
+        if report.removed.is_empty() {
+            println!("{} assets, nothing to drop.", report.total);
+        } else {
+            println!(
+                "Dropped {} unreadable entr{}:",
+                report.removed.len(),
+                if report.removed.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
+            );
+            for row in &report.removed {
+                println!("  {}: {}", row.id, row.problem);
+            }
+        }
+        return Ok(());
     }
 
     if args.thumbnails {

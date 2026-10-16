@@ -18,10 +18,9 @@ change as we learn. See [README.md](README.md) for what the project is.
   base URL Fab pairs with the manifest, which has to be confirmed against a real
   signed-in response.
 - **M3 — Library:** in progress. A SQLite library backs offline browse, search,
-  an integrity check, and a thumbnail cache. A downloaded asset's location is
-  recorded, so previously downloaded assets are browsable and re-exportable by id
-  with the network off. Re-download from the library and repairing damaged
-  entries remain.
+  an integrity check, a thumbnail cache, and repair. A downloaded asset's
+  location is recorded, so previously downloaded assets are browsable and
+  re-exportable by id with the network off. Re-download from the library remains.
 - **M4 — Blender Export:** in progress. A Blender adapter lays an asset's files
   out in a standardized PBR tree, classifies each map into a Principled BSDF
   material graph, and writes a version-tolerant Python script; `export --run`
@@ -157,9 +156,11 @@ Own what you have, even offline.
       `download` records where an asset's files land, and
       `assetcraft export <asset-id> --target <dir>` finds them by id and lays
       them out with the network off.
+- [x] Repair damaged entries, rather than only reporting them
+      (`assetcraft library --repair` realigns stale titles and drops rows whose
+      stored item can no longer be read, leaving their download record in place).
 - [ ] Re-download straight from the library — the exporter is ready, but a fresh
       fetch still needs the CDN base URL M2 has not confirmed (see M2).
-- [ ] Repair damaged entries, rather than only reporting them.
 
 **DoD:** With the network disabled, previously downloaded assets are fully
 browsable and re-exportable.

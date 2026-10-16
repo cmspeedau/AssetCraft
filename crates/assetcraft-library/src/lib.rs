@@ -75,6 +75,24 @@ impl IntegrityReport {
     }
 }
 
+/// The result of repairing the library.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepairReport {
+    /// How many rows were examined.
+    pub total: usize,
+    /// Rows whose denormalised title was realigned with the stored item.
+    pub titles_repaired: usize,
+    /// Unreadable rows that were dropped from the index.
+    pub removed: Vec<UnreadableRow>,
+}
+
+impl RepairReport {
+    /// Whether nothing had to be dropped to make the library healthy.
+    pub fn is_healthy(&self) -> bool {
+        self.removed.is_empty()
+    }
+}
+
 /// Where one asset's files were brought down to disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Download {
@@ -283,6 +301,70 @@ impl Library {
                     id,
                     problem: "stored item is not a readable library item".to_string(),
                 });
+            }
+        }
+        Ok(report)
+    }
+
+    /// Repair the library: realign stale titles and drop unreadable rows.
+    ///
+    /// Where [`verify`] only reports damage, this acts on it. A row whose stored
+    /// item reads back is kept, and its denormalised `title` column is realigned
+    /// with the item it was derived from — the title is only rebuilt on insert,
+    /// so a manual edit or a schema change can leave it stale. A row whose item
+    /// cannot be read back is dropped from the index: it can never be shown,
+    /// searched, or re-exported, so it is dead weight. Its `downloads` record is
+    /// deliberately left in place, because the files are still on disk and a
+    /// later `assetcraft library` sync restores the metadata row.
+    pub fn repair(&self) -> Result<RepairReport> {
+        // Read the rows out first: mutating the table through the same connection
+        // while a cursor is open over it is asking for surprises.
+        let rows = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, title, item FROM assets ORDER BY id")
+                .map_err(database)?;
+            let read = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(database)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(database)?;
+            read
+        };
+
+        let mut report = RepairReport::default();
+        for (id, title, json) in rows {
+            report.total += 1;
+            match serde_json::from_str::<LibraryItem>(&json) {
+                Ok(item) => {
+                    if title != item.title {
+                        self.conn
+                            .execute(
+                                "UPDATE assets SET title = ?1 WHERE id = ?2",
+                                rusqlite::params![item.title, id],
+                            )
+                            .map_err(database)?;
+                        report.titles_repaired += 1;
+                    }
+                }
+                Err(_) => {
+                    self.conn
+                        .execute(
+                            "DELETE FROM assets WHERE id = ?1",
+                            rusqlite::params![id.as_str()],
+                        )
+                        .map_err(database)?;
+                    report.removed.push(UnreadableRow {
+                        id,
+                        problem: "stored item is not a readable library item".to_string(),
+                    });
+                }
             }
         }
         Ok(report)
@@ -563,5 +645,81 @@ mod tests {
 
         assert!(library.remove(&AssetId::new("a")).unwrap());
         assert!(!library.is_downloaded(&AssetId::new("a")).unwrap());
+    }
+
+    #[test]
+    fn repair_leaves_a_healthy_library_untouched() {
+        let library = library();
+        library.insert(&item("a", "Highland Rock")).unwrap();
+
+        let report = library.repair().unwrap();
+        assert_eq!(report.total, 1);
+        assert_eq!(report.titles_repaired, 0);
+        assert!(report.removed.is_empty());
+        assert!(report.is_healthy());
+        assert!(library.contains(&AssetId::new("a")).unwrap());
+    }
+
+    #[test]
+    fn repair_realigns_a_stale_title() {
+        let library = library();
+        library.insert(&item("a", "Highland Rock")).unwrap();
+        // Drift the denormalised title away from the item's own title.
+        library
+            .conn
+            .execute("UPDATE assets SET title = 'Wrong' WHERE id = 'a'", [])
+            .unwrap();
+
+        let report = library.repair().unwrap();
+        assert_eq!(report.titles_repaired, 1);
+        assert!(report.removed.is_empty());
+        assert_eq!(
+            library.get(&AssetId::new("a")).unwrap().unwrap().title,
+            "Highland Rock"
+        );
+        // The rebuilt title is what search now runs against.
+        assert_eq!(library.search("Highland").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn repair_drops_an_unreadable_row() {
+        let library = library();
+        library.insert(&item("a", "Rock")).unwrap();
+        library
+            .conn
+            .execute(
+                "INSERT INTO assets (id, title, item) VALUES ('bad', 'Bad', 'not json')",
+                [],
+            )
+            .unwrap();
+
+        let report = library.repair().unwrap();
+        assert_eq!(report.total, 2);
+        assert_eq!(report.removed.len(), 1);
+        assert_eq!(report.removed[0].id, "bad");
+        assert!(!report.is_healthy());
+        assert_eq!(library.len().unwrap(), 1);
+        assert!(library.get(&AssetId::new("a")).unwrap().is_some());
+        assert!(library.verify().unwrap().is_healthy());
+    }
+
+    #[test]
+    fn repair_keeps_the_download_record_of_a_dropped_row() {
+        let library = library();
+        library
+            .record_download(&AssetId::new("bad"), Path::new("/lib/bad"), "fbx")
+            .unwrap();
+        library
+            .conn
+            .execute(
+                "INSERT INTO assets (id, title, item) VALUES ('bad', 'Bad', 'not json')",
+                [],
+            )
+            .unwrap();
+
+        library.repair().unwrap();
+        // The metadata row is gone, but the on-disk files stay tracked.
+        assert!(!library.contains(&AssetId::new("bad")).unwrap());
+        assert!(library.download(&AssetId::new("bad")).unwrap().is_some());
     }
 }

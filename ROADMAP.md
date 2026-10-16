@@ -18,8 +18,14 @@ change as we learn. See [README.md](README.md) for what the project is.
   base URL Fab pairs with the manifest, which has to be confirmed against a real
   signed-in response.
 - **M3 — Library:** in progress. A SQLite library backs offline browse, search,
-  an integrity check, and a thumbnail cache; re-export from the library
-  remains.
+  an integrity check, a thumbnail cache, and repair. A downloaded asset's
+  location is recorded, so previously downloaded assets are browsable and
+  re-exportable by id with the network off. Re-download from the library remains.
+- **M4 — Blender Export:** in progress. A Blender adapter lays an asset's files
+  out in a standardized PBR tree, classifies each map into a Principled BSDF
+  material graph, and writes a version-tolerant Python script; `export --run`
+  hands it to Blender, and Blender is detected per OS. An installable in-Blender
+  addon remains.
 
 ## Vision
 
@@ -144,25 +150,54 @@ Own what you have, even offline.
       `assetcraft library --search <text>`).
 - [x] Library integrity check (`assetcraft library --verify`).
 - [x] Thumbnail and preview cache (`assetcraft library --thumbnails`).
-- [ ] Re-download and re-export straight from the library (needs M2 asset
-      resolution and the M4 exporter).
-- [ ] Repair damaged entries, rather than only reporting them.
+- [x] Offline browse marks which assets are on disk and re-exportable
+      (`assetcraft library --offline` shows each item's download location).
+- [x] Re-export a previously downloaded asset straight from the library:
+      `download` records where an asset's files land, and
+      `assetcraft export <asset-id> --target <dir>` finds them by id and lays
+      them out with the network off.
+- [x] Repair damaged entries, rather than only reporting them
+      (`assetcraft library --repair` realigns stale titles and drops rows whose
+      stored item can no longer be read, leaving their download record in place).
+- [ ] Re-download straight from the library — the exporter is ready, but a fresh
+      fetch still needs the CDN base URL M2 has not confirmed (see M2).
 
 **DoD:** With the network disabled, previously downloaded assets are fully
 browsable and re-exportable.
+
+> **Reaching the DoD.** Offline browse already covers the "browsable" half, and
+> re-export now covers the rest: a download records its output directory in the
+> library, `export` resolves an asset from that record, and the Blender adapter
+> lays out the files and writes the import script — none of which touches the
+> network. A *re-download* is the one action that cannot happen offline, so it
+> stays open with the CDN base URL that gates it.
 
 ### M4 — Blender Export → `v0.5.0`
 
 The first real integration.
 
-- [ ] Standardized PBR folder layout emitted for every asset.
-- [ ] Blender exporter that builds a correct PBR material graph from the maps.
-- [ ] Python addon bridge for one-click import into the active scene.
-- [ ] Per-OS Blender path detection.
-- [ ] Export both from the CLI and (stub) programmatic API.
+- [x] Standardized PBR folder layout emitted for every asset (`meshes/`,
+      `textures/`, `other/`, with name collisions disambiguated).
+- [x] Blender exporter that builds a correct PBR material graph from the maps
+      (roles classified by name, wired into a Principled BSDF; glossiness
+      inverted, AO multiplied, normal and displacement routed through nodes).
+- [x] A generated, version-tolerant Blender Python script that builds the
+      materials and, unless disabled, imports the meshes into the active scene
+      and assigns the material — `assetcraft export --run` hands it to Blender.
+- [ ] An installable in-Blender addon for one-click import from inside the
+      editor (the generated script is the bridge; the addon is a follow-on).
+- [x] Per-OS Blender path detection (Linux, macOS, Windows, plus `PATH`).
+- [x] Export from the CLI (`assetcraft export`) and as a programmatic API
+      (`assetcraft_dcc_blender::{plan, export, material_script}`).
 
 **DoD:** `assetcraft export <asset-id> --dcc blender` produces a scene-ready,
 correctly-textured material in Blender.
+
+> **Reaching the DoD.** The layout, role classification, and material graph are
+> pure and covered by tests, and the generated script is inspected by tests for
+> the sockets and imports it emits. Blender itself is not in CI, so the final
+> "does it look right in the viewport" check — and the CDN base URL still needed
+> to fetch the bytes in the first place — remain manual validation steps.
 
 ### M5 — GUI & Packaging → `v1.0.0`
 

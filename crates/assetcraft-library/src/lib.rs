@@ -13,11 +13,16 @@
 //! Beside the index sits [`MediaCache`], a content-addressed store for the
 //! thumbnails and previews that make offline browsing useful. It holds bytes
 //! only; fetching them is the caller's job.
+//!
+//! A second table, `downloads`, records which assets have been brought down to
+//! disk and where their files live, so a previously downloaded asset can be
+//! re-exported by id with the network off. The path is local state, kept apart
+//! from the Fab-sourced [`LibraryItem`] JSON so a re-sync never overwrites it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use assetcraft_core::{AssetId, Error, LibraryItem, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 pub mod media;
 
@@ -32,6 +37,11 @@ CREATE TABLE IF NOT EXISTS assets (
     item  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_assets_title ON assets (title COLLATE NOCASE);
+CREATE TABLE IF NOT EXISTS downloads (
+    asset_id TEXT PRIMARY KEY NOT NULL,
+    path     TEXT NOT NULL,
+    format   TEXT NOT NULL DEFAULT ''
+);
 ";
 
 /// The user's local library.
@@ -63,6 +73,33 @@ impl IntegrityReport {
     pub fn is_healthy(&self) -> bool {
         self.unreadable.is_empty()
     }
+}
+
+/// The result of repairing the library.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepairReport {
+    /// How many rows were examined.
+    pub total: usize,
+    /// Rows whose denormalised title was realigned with the stored item.
+    pub titles_repaired: usize,
+    /// Unreadable rows that were dropped from the index.
+    pub removed: Vec<UnreadableRow>,
+}
+
+impl RepairReport {
+    /// Whether nothing had to be dropped to make the library healthy.
+    pub fn is_healthy(&self) -> bool {
+        self.removed.is_empty()
+    }
+}
+
+/// Where one asset's files were brought down to disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Download {
+    /// The directory holding the asset's downloaded files.
+    pub path: PathBuf,
+    /// The format code the files came from, when it was recorded.
+    pub format: String,
 }
 
 impl Library {
@@ -123,11 +160,20 @@ impl Library {
     }
 
     /// Remove an asset, reporting whether it was there.
+    ///
+    /// Any recorded download goes with it, so a later re-download is recorded
+    /// fresh rather than pointing at a directory that has been cleared out.
     pub fn remove(&self, id: &AssetId) -> Result<bool> {
         let changed = self
             .conn
             .execute(
                 "DELETE FROM assets WHERE id = ?1",
+                rusqlite::params![id.as_str()],
+            )
+            .map_err(database)?;
+        self.conn
+            .execute(
+                "DELETE FROM downloads WHERE asset_id = ?1",
                 rusqlite::params![id.as_str()],
             )
             .map_err(database)?;
@@ -181,6 +227,59 @@ impl Library {
         )
     }
 
+    /// Record where an asset's files live on disk, replacing any earlier record.
+    ///
+    /// Downloading an asset twice re-points the record at the newest location;
+    /// the record lives on its own, so an asset need not be in the Fab index to
+    /// have its download tracked.
+    pub fn record_download(&self, id: &AssetId, path: &Path, format: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO downloads (asset_id, path, format) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(asset_id) DO UPDATE SET path = ?2, format = ?3",
+                rusqlite::params![id.as_str(), path.to_string_lossy(), format],
+            )
+            .map_err(database)?;
+        Ok(())
+    }
+
+    /// Where an asset's files were downloaded to, if they were.
+    pub fn download(&self, id: &AssetId) -> Result<Option<Download>> {
+        let found = self
+            .conn
+            .query_row(
+                "SELECT path, format FROM downloads WHERE asset_id = ?1",
+                rusqlite::params![id.as_str()],
+                |row| {
+                    Ok(Download {
+                        path: PathBuf::from(row.get::<_, String>(0)?),
+                        format: row.get::<_, String>(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(database)?;
+        Ok(found)
+    }
+
+    /// Whether the library has a record of an asset's downloaded files.
+    pub fn is_downloaded(&self, id: &AssetId) -> Result<bool> {
+        Ok(self.download(id)?.is_some())
+    }
+
+    /// Drop the record of an asset's downloaded files, reporting whether it was
+    /// there. The files themselves are left untouched.
+    pub fn forget_download(&self, id: &AssetId) -> Result<bool> {
+        let changed = self
+            .conn
+            .execute(
+                "DELETE FROM downloads WHERE asset_id = ?1",
+                rusqlite::params![id.as_str()],
+            )
+            .map_err(database)?;
+        Ok(changed > 0)
+    }
+
     /// Check every row can be read back.
     pub fn verify(&self) -> Result<IntegrityReport> {
         let mut stmt = self
@@ -202,6 +301,70 @@ impl Library {
                     id,
                     problem: "stored item is not a readable library item".to_string(),
                 });
+            }
+        }
+        Ok(report)
+    }
+
+    /// Repair the library: realign stale titles and drop unreadable rows.
+    ///
+    /// Where [`verify`] only reports damage, this acts on it. A row whose stored
+    /// item reads back is kept, and its denormalised `title` column is realigned
+    /// with the item it was derived from — the title is only rebuilt on insert,
+    /// so a manual edit or a schema change can leave it stale. A row whose item
+    /// cannot be read back is dropped from the index: it can never be shown,
+    /// searched, or re-exported, so it is dead weight. Its `downloads` record is
+    /// deliberately left in place, because the files are still on disk and a
+    /// later `assetcraft library` sync restores the metadata row.
+    pub fn repair(&self) -> Result<RepairReport> {
+        // Read the rows out first: mutating the table through the same connection
+        // while a cursor is open over it is asking for surprises.
+        let rows = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, title, item FROM assets ORDER BY id")
+                .map_err(database)?;
+            let read = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(database)?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(database)?;
+            read
+        };
+
+        let mut report = RepairReport::default();
+        for (id, title, json) in rows {
+            report.total += 1;
+            match serde_json::from_str::<LibraryItem>(&json) {
+                Ok(item) => {
+                    if title != item.title {
+                        self.conn
+                            .execute(
+                                "UPDATE assets SET title = ?1 WHERE id = ?2",
+                                rusqlite::params![item.title, id],
+                            )
+                            .map_err(database)?;
+                        report.titles_repaired += 1;
+                    }
+                }
+                Err(_) => {
+                    self.conn
+                        .execute(
+                            "DELETE FROM assets WHERE id = ?1",
+                            rusqlite::params![id.as_str()],
+                        )
+                        .map_err(database)?;
+                    report.removed.push(UnreadableRow {
+                        id,
+                        problem: "stored item is not a readable library item".to_string(),
+                    });
+                }
             }
         }
         Ok(report)
@@ -408,5 +571,155 @@ mod tests {
         assert!(!report.is_healthy());
         assert_eq!(report.unreadable.len(), 1);
         assert_eq!(report.unreadable[0].id, "bad");
+    }
+
+    #[test]
+    fn a_download_records_where_the_files_live() {
+        let library = library();
+        library
+            .record_download(&AssetId::new("a"), Path::new("/lib/a/fbx"), "fbx")
+            .unwrap();
+
+        let found = library.download(&AssetId::new("a")).unwrap().unwrap();
+        assert_eq!(found.path, PathBuf::from("/lib/a/fbx"));
+        assert_eq!(found.format, "fbx");
+        assert!(library.is_downloaded(&AssetId::new("a")).unwrap());
+    }
+
+    #[test]
+    fn redownloading_repoints_the_record_rather_than_adding_one() {
+        let library = library();
+        library
+            .record_download(&AssetId::new("a"), Path::new("/old"), "fbx")
+            .unwrap();
+        library
+            .record_download(&AssetId::new("a"), Path::new("/new/glb"), "glb")
+            .unwrap();
+
+        let found = library.download(&AssetId::new("a")).unwrap().unwrap();
+        assert_eq!(found.path, PathBuf::from("/new/glb"));
+        assert_eq!(found.format, "glb");
+    }
+
+    #[test]
+    fn a_download_is_tracked_without_the_fab_item_being_stored() {
+        // The downloads table stands alone, so `download` records work even
+        // before `assetcraft library` has synced the asset's metadata.
+        let library = library();
+        library
+            .record_download(&AssetId::new("a"), Path::new("/lib/a"), "fbx")
+            .unwrap();
+
+        assert!(library.get(&AssetId::new("a")).unwrap().is_none());
+        assert!(library.is_downloaded(&AssetId::new("a")).unwrap());
+    }
+
+    #[test]
+    fn an_asset_never_downloaded_has_no_record() {
+        let library = library();
+        assert!(library.download(&AssetId::new("a")).unwrap().is_none());
+        assert!(!library.is_downloaded(&AssetId::new("a")).unwrap());
+    }
+
+    #[test]
+    fn forgetting_a_download_leaves_the_asset_in_place() {
+        let library = library();
+        library.insert(&item("a", "Rock")).unwrap();
+        library
+            .record_download(&AssetId::new("a"), Path::new("/lib/a"), "fbx")
+            .unwrap();
+
+        assert!(library.forget_download(&AssetId::new("a")).unwrap());
+        assert!(!library.forget_download(&AssetId::new("a")).unwrap());
+        assert!(!library.is_downloaded(&AssetId::new("a")).unwrap());
+        assert!(library.contains(&AssetId::new("a")).unwrap());
+    }
+
+    #[test]
+    fn removing_an_asset_clears_its_download_record() {
+        let library = library();
+        library.insert(&item("a", "Rock")).unwrap();
+        library
+            .record_download(&AssetId::new("a"), Path::new("/lib/a"), "fbx")
+            .unwrap();
+
+        assert!(library.remove(&AssetId::new("a")).unwrap());
+        assert!(!library.is_downloaded(&AssetId::new("a")).unwrap());
+    }
+
+    #[test]
+    fn repair_leaves_a_healthy_library_untouched() {
+        let library = library();
+        library.insert(&item("a", "Highland Rock")).unwrap();
+
+        let report = library.repair().unwrap();
+        assert_eq!(report.total, 1);
+        assert_eq!(report.titles_repaired, 0);
+        assert!(report.removed.is_empty());
+        assert!(report.is_healthy());
+        assert!(library.contains(&AssetId::new("a")).unwrap());
+    }
+
+    #[test]
+    fn repair_realigns_a_stale_title() {
+        let library = library();
+        library.insert(&item("a", "Highland Rock")).unwrap();
+        // Drift the denormalised title away from the item's own title.
+        library
+            .conn
+            .execute("UPDATE assets SET title = 'Wrong' WHERE id = 'a'", [])
+            .unwrap();
+
+        let report = library.repair().unwrap();
+        assert_eq!(report.titles_repaired, 1);
+        assert!(report.removed.is_empty());
+        assert_eq!(
+            library.get(&AssetId::new("a")).unwrap().unwrap().title,
+            "Highland Rock"
+        );
+        // The rebuilt title is what search now runs against.
+        assert_eq!(library.search("Highland").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn repair_drops_an_unreadable_row() {
+        let library = library();
+        library.insert(&item("a", "Rock")).unwrap();
+        library
+            .conn
+            .execute(
+                "INSERT INTO assets (id, title, item) VALUES ('bad', 'Bad', 'not json')",
+                [],
+            )
+            .unwrap();
+
+        let report = library.repair().unwrap();
+        assert_eq!(report.total, 2);
+        assert_eq!(report.removed.len(), 1);
+        assert_eq!(report.removed[0].id, "bad");
+        assert!(!report.is_healthy());
+        assert_eq!(library.len().unwrap(), 1);
+        assert!(library.get(&AssetId::new("a")).unwrap().is_some());
+        assert!(library.verify().unwrap().is_healthy());
+    }
+
+    #[test]
+    fn repair_keeps_the_download_record_of_a_dropped_row() {
+        let library = library();
+        library
+            .record_download(&AssetId::new("bad"), Path::new("/lib/bad"), "fbx")
+            .unwrap();
+        library
+            .conn
+            .execute(
+                "INSERT INTO assets (id, title, item) VALUES ('bad', 'Bad', 'not json')",
+                [],
+            )
+            .unwrap();
+
+        library.repair().unwrap();
+        // The metadata row is gone, but the on-disk files stay tracked.
+        assert!(!library.contains(&AssetId::new("bad")).unwrap());
+        assert!(library.download(&AssetId::new("bad")).unwrap().is_some());
     }
 }

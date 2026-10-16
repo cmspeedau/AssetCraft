@@ -129,6 +129,7 @@ dependencies = [
  "assetcraft-auth",
  "assetcraft-catalog",
  "assetcraft-core",
+ "assetcraft-dcc-blender",
  "assetcraft-download",
  "assetcraft-library",
  "chrono",
@@ -155,6 +156,7 @@ name = "assetcraft-dcc-blender"
 version = "0.1.0"
 dependencies = [
  "assetcraft-core",
+ "tempfile",
 ]
 
 [[package]]

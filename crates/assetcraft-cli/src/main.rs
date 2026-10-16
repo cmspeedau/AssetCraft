@@ -43,6 +43,8 @@ enum Command {
     Resolve(ResolveArgs),
     /// Download an owned asset's files and reassemble them (requires sign-in).
     Download(DownloadArgs),
+    /// Lay out an asset's downloaded files for a DCC and write the import script.
+    Export(ExportArgs),
     /// Inspect the catalog's taxonomy.
     Taxonomy(TaxonomyArgs),
 }
@@ -218,6 +220,51 @@ struct DownloadArgs {
     limit: Option<u64>,
 }
 
+#[derive(Debug, Args)]
+struct ExportArgs {
+    /// Asset id to export (as printed by `search`).
+    asset_id: String,
+
+    /// Target application.
+    #[arg(long, value_enum, default_value_t = DccArg::Blender)]
+    dcc: DccArg,
+
+    /// Directory holding the asset's downloaded files.
+    ///
+    /// Omit it to use the location `download` recorded in the library.
+    #[arg(long, short)]
+    source: Option<PathBuf>,
+
+    /// Directory to lay the export out under.
+    #[arg(long, short)]
+    target: PathBuf,
+
+    /// Format code the files came from, used in the export directory name.
+    ///
+    /// Defaults to the format `download` recorded when sourcing from the
+    /// library, or `asset` otherwise.
+    #[arg(long)]
+    format: Option<String>,
+
+    /// Only build the materials; do not import the meshes or assign them.
+    #[arg(long)]
+    no_mesh_import: bool,
+
+    /// Hand the generated script to Blender.
+    #[arg(long)]
+    run: bool,
+
+    /// The Blender binary to run, or the one on PATH.
+    #[arg(long)]
+    blender: Option<PathBuf>,
+}
+
+/// The DCC targets `export` understands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum DccArg {
+    Blender,
+}
+
 /// Selection flags shared by `formats` and `resolve`.
 #[derive(Debug, Args)]
 struct SelectionArgs {
@@ -305,6 +352,7 @@ async fn main() -> Result<()> {
         Command::Formats(args) => formats(&config, args).await,
         Command::Resolve(args) => resolve(&config, args).await,
         Command::Download(args) => download(&config, args).await,
+        Command::Export(args) => export_asset(&config, args),
         Command::Taxonomy(args) => taxonomy(&config, args).await,
     }
 }
@@ -398,7 +446,7 @@ async fn library(config: &Config, args: LibraryArgs) -> Result<()> {
         if args.json {
             println!("{}", serde_json::to_string_pretty(&items)?);
         } else {
-            print_library_items(&items, &media);
+            print_library_items(&items, &media, &library);
         }
         return Ok(());
     }
@@ -408,7 +456,7 @@ async fn library(config: &Config, args: LibraryArgs) -> Result<()> {
         if args.json {
             println!("{}", serde_json::to_string_pretty(&items)?);
         } else {
-            print_library_items(&items, &media);
+            print_library_items(&items, &media, &library);
         }
         return Ok(());
     }
@@ -457,7 +505,7 @@ async fn library(config: &Config, args: LibraryArgs) -> Result<()> {
     if args.json {
         println!("{}", serde_json::to_string_pretty(&items)?);
     } else {
-        print_library_items(&items, &media);
+        print_library_items(&items, &media, &library);
     }
     Ok(())
 }
@@ -715,7 +763,7 @@ async fn resolve_manifest(
 async fn download(config: &Config, args: DownloadArgs) -> Result<()> {
     let client = FabClient::from_config(config)?;
     let criteria = args.select.criteria();
-    let (_format_code, manifest) = resolve_manifest(&client, &args.asset_id, &criteria).await?;
+    let (format_code, manifest) = resolve_manifest(&client, &args.asset_id, &criteria).await?;
 
     println!(
         "{} files, {} chunks ({} bytes to download).",
@@ -780,6 +828,20 @@ async fn download(config: &Config, args: DownloadArgs) -> Result<()> {
 
     let _ = std::fs::remove_dir_all(&scratch);
     println!("Wrote {} files to {}.", files.len(), args.output.display());
+
+    // Record where the files landed so `export` can find them again by id with
+    // the network off. The path is stored absolute, so the record survives a
+    // different working directory.
+    let stored = std::fs::canonicalize(&args.output).unwrap_or_else(|_| args.output.clone());
+    let library =
+        Library::open(config.paths.library_file()).context("could not open the local library")?;
+    library
+        .record_download(&AssetId::new(&args.asset_id), &stored, &format_code)
+        .context("could not record the download in the library")?;
+    println!(
+        "Recorded it in the library — re-export offline with: assetcraft export {} --target <dir>",
+        args.asset_id
+    );
     Ok(())
 }
 
@@ -794,6 +856,97 @@ fn safe_join(root: &Path, name: &str) -> Result<PathBuf> {
         anyhow::bail!("the manifest lists a path outside the output directory: {name:?}");
     }
     Ok(root.join(relative))
+}
+
+/// Lay an asset's downloaded files out for a DCC and write the import script.
+///
+/// The files come from `--source` when given, otherwise from the location
+/// `download` recorded in the library, which is what makes an asset you already
+/// own re-exportable with the network off.
+fn export_asset(config: &Config, args: ExportArgs) -> Result<()> {
+    let dcc = match args.dcc {
+        DccArg::Blender => "blender",
+    };
+
+    let asset = AssetId::new(&args.asset_id);
+    let recorded = if args.source.is_none() || args.format.is_none() {
+        Library::open(config.paths.library_file())
+            .context("could not open the local library")?
+            .download(&asset)
+            .context("could not read the library")?
+    } else {
+        None
+    };
+
+    let source = match (args.source, &recorded) {
+        (Some(source), _) => source,
+        (None, Some(download)) => download.path.clone(),
+        (None, None) => anyhow::bail!(
+            "{} is not in the library as a download; pass --source, or run \
+             `assetcraft download {}` first",
+            args.asset_id,
+            args.asset_id
+        ),
+    };
+    let format = args
+        .format
+        .clone()
+        .or_else(|| recorded.map(|d| d.format).filter(|f| !f.is_empty()))
+        .unwrap_or_else(|| "asset".to_string());
+
+    let files =
+        collect_files(&source).with_context(|| format!("could not read {}", source.display()))?;
+    if files.is_empty() {
+        anyhow::bail!("{} holds no files to export", source.display());
+    }
+
+    let plan = assetcraft_dcc_blender::plan(&args.target, &asset, &format, &files);
+    let options = assetcraft_dcc_blender::ExportOptions {
+        import_meshes: !args.no_mesh_import,
+        run: args.run,
+        blender: args.blender.clone(),
+    };
+    let report = assetcraft_dcc_blender::export(&plan, &source, &options)
+        .context("could not export the asset")?;
+
+    println!(
+        "Laid out {} files as {} material(s) for {dcc} in {}",
+        report.copied,
+        report.materials,
+        report.dir.display()
+    );
+    println!("Script: {}", report.script.display());
+    if report.ran {
+        match &report.blender {
+            Some(blender) => println!("Ran {}", blender.display()),
+            None => println!("Ran Blender"),
+        }
+    } else {
+        println!(
+            "Run it with: blender --background --python {}",
+            report.script.display()
+        );
+    }
+    Ok(())
+}
+
+/// Every file under `root`, as paths relative to it, sorted for a stable plan.
+fn collect_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                stack.push(path);
+            } else if let Ok(relative) = path.strip_prefix(root) {
+                files.push(relative.to_path_buf());
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
 }
 
 fn print_manifest(manifest: &Manifest, show_chunks: bool) {
@@ -902,7 +1055,7 @@ fn print_page(page: &Page<AssetSummary>) {
     }
 }
 
-fn print_library_items(items: &[LibraryItem], media: &MediaCache) {
+fn print_library_items(items: &[LibraryItem], media: &MediaCache, library: &Library) {
     println!("{} assets in your library\n", items.len());
 
     for item in items {
@@ -932,6 +1085,22 @@ fn print_library_items(items: &[LibraryItem], media: &MediaCache) {
             .collect();
         if !categories.is_empty() {
             println!("  categories: {}", categories.join(", "));
+        }
+        // Show what is on disk and re-exportable offline, and flag a record
+        // whose files have since been moved or deleted.
+        let on_disk = library
+            .download(&AssetId::new(&item.asset_id))
+            .ok()
+            .flatten()
+            .map(|download| {
+                if download.path.exists() {
+                    format!("  downloaded: {} [exportable]", download.path.display())
+                } else {
+                    format!("  downloaded: {} [files missing]", download.path.display())
+                }
+            });
+        if let Some(on_disk) = on_disk {
+            println!("{on_disk}");
         }
         println!();
     }

@@ -16,6 +16,7 @@ anyhow.workspace = true
 assetcraft-auth.workspace = true
 assetcraft-catalog.workspace = true
 assetcraft-core.workspace = true
+assetcraft-dcc-blender.workspace = true
 assetcraft-download.workspace = true
 assetcraft-library.workspace = true
 chrono.workspace = true

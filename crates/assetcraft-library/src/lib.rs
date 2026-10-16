@@ -13,11 +13,16 @@
 //! Beside the index sits [`MediaCache`], a content-addressed store for the
 //! thumbnails and previews that make offline browsing useful. It holds bytes
 //! only; fetching them is the caller's job.
+//!
+//! A second table, `downloads`, records which assets have been brought down to
+//! disk and where their files live, so a previously downloaded asset can be
+//! re-exported by id with the network off. The path is local state, kept apart
+//! from the Fab-sourced [`LibraryItem`] JSON so a re-sync never overwrites it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use assetcraft_core::{AssetId, Error, LibraryItem, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 pub mod media;
 
@@ -32,6 +37,11 @@ CREATE TABLE IF NOT EXISTS assets (
     item  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_assets_title ON assets (title COLLATE NOCASE);
+CREATE TABLE IF NOT EXISTS downloads (
+    asset_id TEXT PRIMARY KEY NOT NULL,
+    path     TEXT NOT NULL,
+    format   TEXT NOT NULL DEFAULT ''
+);
 ";
 
 /// The user's local library.
@@ -63,6 +73,15 @@ impl IntegrityReport {
     pub fn is_healthy(&self) -> bool {
         self.unreadable.is_empty()
     }
+}
+
+/// Where one asset's files were brought down to disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Download {
+    /// The directory holding the asset's downloaded files.
+    pub path: PathBuf,
+    /// The format code the files came from, when it was recorded.
+    pub format: String,
 }
 
 impl Library {
@@ -123,11 +142,20 @@ impl Library {
     }
 
     /// Remove an asset, reporting whether it was there.
+    ///
+    /// Any recorded download goes with it, so a later re-download is recorded
+    /// fresh rather than pointing at a directory that has been cleared out.
     pub fn remove(&self, id: &AssetId) -> Result<bool> {
         let changed = self
             .conn
             .execute(
                 "DELETE FROM assets WHERE id = ?1",
+                rusqlite::params![id.as_str()],
+            )
+            .map_err(database)?;
+        self.conn
+            .execute(
+                "DELETE FROM downloads WHERE asset_id = ?1",
                 rusqlite::params![id.as_str()],
             )
             .map_err(database)?;
@@ -179,6 +207,59 @@ impl Library {
              ORDER BY title COLLATE NOCASE, id",
             rusqlite::params![needle],
         )
+    }
+
+    /// Record where an asset's files live on disk, replacing any earlier record.
+    ///
+    /// Downloading an asset twice re-points the record at the newest location;
+    /// the record lives on its own, so an asset need not be in the Fab index to
+    /// have its download tracked.
+    pub fn record_download(&self, id: &AssetId, path: &Path, format: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO downloads (asset_id, path, format) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(asset_id) DO UPDATE SET path = ?2, format = ?3",
+                rusqlite::params![id.as_str(), path.to_string_lossy(), format],
+            )
+            .map_err(database)?;
+        Ok(())
+    }
+
+    /// Where an asset's files were downloaded to, if they were.
+    pub fn download(&self, id: &AssetId) -> Result<Option<Download>> {
+        let found = self
+            .conn
+            .query_row(
+                "SELECT path, format FROM downloads WHERE asset_id = ?1",
+                rusqlite::params![id.as_str()],
+                |row| {
+                    Ok(Download {
+                        path: PathBuf::from(row.get::<_, String>(0)?),
+                        format: row.get::<_, String>(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(database)?;
+        Ok(found)
+    }
+
+    /// Whether the library has a record of an asset's downloaded files.
+    pub fn is_downloaded(&self, id: &AssetId) -> Result<bool> {
+        Ok(self.download(id)?.is_some())
+    }
+
+    /// Drop the record of an asset's downloaded files, reporting whether it was
+    /// there. The files themselves are left untouched.
+    pub fn forget_download(&self, id: &AssetId) -> Result<bool> {
+        let changed = self
+            .conn
+            .execute(
+                "DELETE FROM downloads WHERE asset_id = ?1",
+                rusqlite::params![id.as_str()],
+            )
+            .map_err(database)?;
+        Ok(changed > 0)
     }
 
     /// Check every row can be read back.
@@ -408,5 +489,79 @@ mod tests {
         assert!(!report.is_healthy());
         assert_eq!(report.unreadable.len(), 1);
         assert_eq!(report.unreadable[0].id, "bad");
+    }
+
+    #[test]
+    fn a_download_records_where_the_files_live() {
+        let library = library();
+        library
+            .record_download(&AssetId::new("a"), Path::new("/lib/a/fbx"), "fbx")
+            .unwrap();
+
+        let found = library.download(&AssetId::new("a")).unwrap().unwrap();
+        assert_eq!(found.path, PathBuf::from("/lib/a/fbx"));
+        assert_eq!(found.format, "fbx");
+        assert!(library.is_downloaded(&AssetId::new("a")).unwrap());
+    }
+
+    #[test]
+    fn redownloading_repoints_the_record_rather_than_adding_one() {
+        let library = library();
+        library
+            .record_download(&AssetId::new("a"), Path::new("/old"), "fbx")
+            .unwrap();
+        library
+            .record_download(&AssetId::new("a"), Path::new("/new/glb"), "glb")
+            .unwrap();
+
+        let found = library.download(&AssetId::new("a")).unwrap().unwrap();
+        assert_eq!(found.path, PathBuf::from("/new/glb"));
+        assert_eq!(found.format, "glb");
+    }
+
+    #[test]
+    fn a_download_is_tracked_without_the_fab_item_being_stored() {
+        // The downloads table stands alone, so `download` records work even
+        // before `assetcraft library` has synced the asset's metadata.
+        let library = library();
+        library
+            .record_download(&AssetId::new("a"), Path::new("/lib/a"), "fbx")
+            .unwrap();
+
+        assert!(library.get(&AssetId::new("a")).unwrap().is_none());
+        assert!(library.is_downloaded(&AssetId::new("a")).unwrap());
+    }
+
+    #[test]
+    fn an_asset_never_downloaded_has_no_record() {
+        let library = library();
+        assert!(library.download(&AssetId::new("a")).unwrap().is_none());
+        assert!(!library.is_downloaded(&AssetId::new("a")).unwrap());
+    }
+
+    #[test]
+    fn forgetting_a_download_leaves_the_asset_in_place() {
+        let library = library();
+        library.insert(&item("a", "Rock")).unwrap();
+        library
+            .record_download(&AssetId::new("a"), Path::new("/lib/a"), "fbx")
+            .unwrap();
+
+        assert!(library.forget_download(&AssetId::new("a")).unwrap());
+        assert!(!library.forget_download(&AssetId::new("a")).unwrap());
+        assert!(!library.is_downloaded(&AssetId::new("a")).unwrap());
+        assert!(library.contains(&AssetId::new("a")).unwrap());
+    }
+
+    #[test]
+    fn removing_an_asset_clears_its_download_record() {
+        let library = library();
+        library.insert(&item("a", "Rock")).unwrap();
+        library
+            .record_download(&AssetId::new("a"), Path::new("/lib/a"), "fbx")
+            .unwrap();
+
+        assert!(library.remove(&AssetId::new("a")).unwrap());
+        assert!(!library.is_downloaded(&AssetId::new("a")).unwrap());
     }
 }

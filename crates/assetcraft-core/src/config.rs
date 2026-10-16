@@ -67,6 +67,22 @@ impl Paths {
     pub fn thumbnail_cache_dir(&self) -> PathBuf {
         self.cache_dir.join("thumbnails")
     }
+
+    /// Where downloaded assets are laid out, one directory per asset id.
+    ///
+    /// This is the standard home for a download's reassembled files: the place
+    /// [`Self::asset_dir`] points an asset at, and the default a `download`
+    /// writes to and an `export` reads from. Keeping it under `data_dir` rather
+    /// than `cache_dir` marks the files as something the user owns and keeps,
+    /// not disposable cache.
+    pub fn assets_dir(&self) -> PathBuf {
+        self.data_dir.join("assets")
+    }
+
+    /// The directory one asset's downloaded files live in.
+    pub fn asset_dir(&self, asset_id: &str) -> PathBuf {
+        self.assets_dir().join(asset_id)
+    }
 }
 
 /// Everything needed to talk to the outside world and to store local state.
@@ -149,6 +165,14 @@ mod tests {
         assert_eq!(
             paths.thumbnail_cache_dir(),
             PathBuf::from("/tmp/assetcraft-test/cache/thumbnails")
+        );
+        assert_eq!(
+            paths.assets_dir(),
+            PathBuf::from("/tmp/assetcraft-test/data/assets")
+        );
+        assert_eq!(
+            paths.asset_dir("rock-1"),
+            PathBuf::from("/tmp/assetcraft-test/data/assets/rock-1")
         );
     }
 

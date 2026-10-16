@@ -9,6 +9,17 @@ use std::path::{Path, PathBuf};
 
 use assetcraft_core::AssetId;
 
+pub mod detect;
+pub mod exporter;
+pub mod material;
+pub mod plan;
+pub mod script;
+
+pub use exporter::{export, ExportOptions, ExportReport};
+pub use material::{Binding, MaterialSpec, TextureMap};
+pub use plan::{plan, ExportPlan, FileKind, PlannedFile};
+pub use script::material_script;
+
 /// A PBR texture slot that a file can fill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TextureRole {
@@ -99,18 +110,35 @@ const ROLE_SUFFIXES: &[(&str, TextureRole)] = &[
     ("emit", TextureRole::Emissive),
 ];
 
-/// Classify a texture file name by the role token it ends with.
+/// A texture file name, read for the role it fills and the material it belongs
+/// to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Classified {
+    /// The role the name's token puts it in.
+    pub role: TextureRole,
+    /// The part of the stem before the role token, trimmed of the separators
+    /// between them — the material the map belongs to. `None` when no role
+    /// matched, or when the token is the whole stem.
+    pub material: Option<String>,
+}
+
+/// Classify a texture file name by the role token it ends with, and recover the
+/// material name in front of that token.
 ///
-/// Works on stems like `rock_basecolor`, `T_Rock_Base_Color_Normal`, or
-/// `boulder_AO.png`. Only the file name is inspected, so a full path is fine.
+/// Works on stems like `rock_basecolor`, `T_Rock_Base_Color`, or `boulder_AO`.
+/// Only the file name is inspected, so a full path is fine.
 ///
 /// ```
-/// use assetcraft_dcc_blender::{classify_texture, TextureRole};
-/// assert_eq!(classify_texture("rock_basecolor.png"), TextureRole::BaseColor);
-/// assert_eq!(classify_texture("rock_normal.png"), TextureRole::Normal);
-/// assert_eq!(classify_texture("mystery.png"), TextureRole::Unknown);
+/// use assetcraft_dcc_blender::{classify, TextureRole};
+/// let rock = classify("rock_basecolor.png");
+/// assert_eq!(rock.role, TextureRole::BaseColor);
+/// assert_eq!(rock.material.as_deref(), Some("rock"));
+///
+/// let unnamed = classify("normal.png");
+/// assert_eq!(unnamed.role, TextureRole::Normal);
+/// assert_eq!(unnamed.material, None);
 /// ```
-pub fn classify_texture(file_name: &str) -> TextureRole {
+pub fn classify(file_name: &str) -> Classified {
     let stem = Path::new(file_name)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -121,11 +149,59 @@ pub fn classify_texture(file_name: &str) -> TextureRole {
         .collect::<String>()
         .to_ascii_lowercase();
 
-    ROLE_SUFFIXES
+    match ROLE_SUFFIXES
         .iter()
         .find(|(suffix, _)| normalized.ends_with(suffix))
-        .map(|(_, role)| *role)
-        .unwrap_or(TextureRole::Unknown)
+    {
+        Some((suffix, role)) => Classified {
+            role: *role,
+            material: strip_role_token(stem, suffix),
+        },
+        None => Classified {
+            role: TextureRole::Unknown,
+            material: None,
+        },
+    }
+}
+
+/// Drop the role token from the end of `stem`, keeping what came before it.
+///
+/// The token was matched against a stem with its non-alphanumerics removed, so
+/// the match is re-found here character by character from the end, which lets
+/// the original separators (and case) survive in the material name.
+fn strip_role_token(stem: &str, suffix: &str) -> Option<String> {
+    let mut matched = 0usize;
+    let mut cut = 0usize;
+    for (index, ch) in stem.char_indices().rev() {
+        if ch.is_ascii_alphanumeric() {
+            matched += 1;
+            if matched == suffix.len() {
+                cut = index;
+                break;
+            }
+        }
+    }
+    if matched != suffix.len() {
+        return None;
+    }
+    let material = stem[..cut]
+        .trim_end_matches(|c: char| !c.is_ascii_alphanumeric())
+        .to_string();
+    (!material.is_empty()).then_some(material)
+}
+
+/// Classify a texture file name by the role token it ends with.
+///
+/// A thin wrapper over [`classify`] for callers that only want the role.
+///
+/// ```
+/// use assetcraft_dcc_blender::{classify_texture, TextureRole};
+/// assert_eq!(classify_texture("rock_basecolor.png"), TextureRole::BaseColor);
+/// assert_eq!(classify_texture("rock_normal.png"), TextureRole::Normal);
+/// assert_eq!(classify_texture("mystery.png"), TextureRole::Unknown);
+/// ```
+pub fn classify_texture(file_name: &str) -> TextureRole {
+    classify(file_name).role
 }
 
 /// The directory an asset's files export into: `<root>/<asset id>/<format>`.
@@ -214,6 +290,35 @@ mod tests {
             classify_texture("/assets/rock/rock_basecolor.png"),
             TextureRole::BaseColor
         );
+    }
+
+    #[test]
+    fn recovers_the_material_name_before_the_role_token() {
+        assert_eq!(
+            classify("rock_basecolor.png").material.as_deref(),
+            Some("rock")
+        );
+        assert_eq!(
+            classify("T_Rock_Base_Color.png").material.as_deref(),
+            Some("T_Rock")
+        );
+        assert_eq!(
+            classify("boulder-AO.png").material.as_deref(),
+            Some("boulder")
+        );
+    }
+
+    #[test]
+    fn a_token_with_no_name_before_it_has_no_material() {
+        assert_eq!(classify("normal.png").material, None);
+        assert_eq!(classify("basecolor.png").material, None);
+    }
+
+    #[test]
+    fn an_unknown_name_has_neither_role_nor_material() {
+        let classified = classify("mystery.png");
+        assert_eq!(classified.role, TextureRole::Unknown);
+        assert_eq!(classified.material, None);
     }
 
     #[test]

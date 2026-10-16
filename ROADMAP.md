@@ -18,8 +18,15 @@ change as we learn. See [README.md](README.md) for what the project is.
   base URL Fab pairs with the manifest, which has to be confirmed against a real
   signed-in response.
 - **M3 — Library:** in progress. A SQLite library backs offline browse, search,
-  an integrity check, and a thumbnail cache; re-export from the library
-  remains.
+  an integrity check, and a thumbnail cache. A downloaded asset's location is
+  recorded, so previously downloaded assets are browsable and re-exportable by id
+  with the network off. Re-download from the library and repairing damaged
+  entries remain.
+- **M4 — Blender Export:** in progress. A Blender adapter lays an asset's files
+  out in a standardized PBR tree, classifies each map into a Principled BSDF
+  material graph, and writes a version-tolerant Python script; `export --run`
+  hands it to Blender, and Blender is detected per OS. An installable in-Blender
+  addon remains.
 
 ## Vision
 
@@ -144,25 +151,52 @@ Own what you have, even offline.
       `assetcraft library --search <text>`).
 - [x] Library integrity check (`assetcraft library --verify`).
 - [x] Thumbnail and preview cache (`assetcraft library --thumbnails`).
-- [ ] Re-download and re-export straight from the library (needs M2 asset
-      resolution and the M4 exporter).
+- [x] Offline browse marks which assets are on disk and re-exportable
+      (`assetcraft library --offline` shows each item's download location).
+- [x] Re-export a previously downloaded asset straight from the library:
+      `download` records where an asset's files land, and
+      `assetcraft export <asset-id> --target <dir>` finds them by id and lays
+      them out with the network off.
+- [ ] Re-download straight from the library — the exporter is ready, but a fresh
+      fetch still needs the CDN base URL M2 has not confirmed (see M2).
 - [ ] Repair damaged entries, rather than only reporting them.
 
 **DoD:** With the network disabled, previously downloaded assets are fully
 browsable and re-exportable.
 
+> **Reaching the DoD.** Offline browse already covers the "browsable" half, and
+> re-export now covers the rest: a download records its output directory in the
+> library, `export` resolves an asset from that record, and the Blender adapter
+> lays out the files and writes the import script — none of which touches the
+> network. A *re-download* is the one action that cannot happen offline, so it
+> stays open with the CDN base URL that gates it.
+
 ### M4 — Blender Export → `v0.5.0`
 
 The first real integration.
 
-- [ ] Standardized PBR folder layout emitted for every asset.
-- [ ] Blender exporter that builds a correct PBR material graph from the maps.
-- [ ] Python addon bridge for one-click import into the active scene.
-- [ ] Per-OS Blender path detection.
-- [ ] Export both from the CLI and (stub) programmatic API.
+- [x] Standardized PBR folder layout emitted for every asset (`meshes/`,
+      `textures/`, `other/`, with name collisions disambiguated).
+- [x] Blender exporter that builds a correct PBR material graph from the maps
+      (roles classified by name, wired into a Principled BSDF; glossiness
+      inverted, AO multiplied, normal and displacement routed through nodes).
+- [x] A generated, version-tolerant Blender Python script that builds the
+      materials and, unless disabled, imports the meshes into the active scene
+      and assigns the material — `assetcraft export --run` hands it to Blender.
+- [ ] An installable in-Blender addon for one-click import from inside the
+      editor (the generated script is the bridge; the addon is a follow-on).
+- [x] Per-OS Blender path detection (Linux, macOS, Windows, plus `PATH`).
+- [x] Export from the CLI (`assetcraft export`) and as a programmatic API
+      (`assetcraft_dcc_blender::{plan, export, material_script}`).
 
 **DoD:** `assetcraft export <asset-id> --dcc blender` produces a scene-ready,
 correctly-textured material in Blender.
+
+> **Reaching the DoD.** The layout, role classification, and material graph are
+> pure and covered by tests, and the generated script is inspected by tests for
+> the sockets and imports it emits. Blender itself is not in CI, so the final
+> "does it look right in the viewport" check — and the CDN base URL still needed
+> to fetch the bytes in the first place — remain manual validation steps.
 
 ### M5 — GUI & Packaging → `v1.0.0`
 
@@ -178,6 +212,53 @@ Make it a product.
 
 **DoD:** A non-developer can install AssetCraft, sign in, download an asset, and
 export it to Blender without touching a terminal.
+
+### M6 — Godot Export → `v1.1.0`
+
+The second DCC, and the first that shows the shared export trait earns its keep.
+
+Godot is a different target from Blender in three ways that shape the work: it
+wants **`.glb`/`.gltf`** (glTF is Godot's first-class, no-reimport path) rather
+than FBX/OBJ into a Python graph; it builds materials from a **`.gd` script or a
+`.tscn`/`.tres` resource** rather than a Principled BSDF node tree; and it packs
+occlusion-roughness-metallic into a **single ORM texture** rather than wiring
+separate maps. M6 reuses M4's layout and role classification and re-expresses
+them in Godot's terms.
+
+- [ ] `assetcraft-dcc-godot` adapter crate implementing the shared export trait,
+      reusing the M4 PBR layout (`meshes/`, `textures/`, `other/`) and the same
+      name-based role classification rather than re-deriving either.
+- [ ] A generated, version-tolerant Godot script (GDScript) that builds a
+      `StandardMaterial3D` (or `ORMMaterial3D`) per classified material — albedo,
+      metallic, roughness, emission, normal — and applies it to imported meshes.
+- [ ] ORM packing: combine the AO, roughness, and metallic maps the classifier
+      finds into the single occlusion/roughness/metallic texture Godot expects,
+      falling back to `StandardMaterial3D` scalars when a map is absent.
+- [ ] Mesh path: prefer glTF (`.glb`/`.gltf`) as the lossless import Godot reads
+      without a reimport step; fall back to the FBX/OBJ a Fab format already
+      provides, recorded so the caller sees which was used.
+- [ ] A scene export: a `.tscn` (text scene) referencing the material and meshes,
+      so `--run` yields a scene the user can open rather than only a script.
+- [ ] `assetcraft export --dcc godot` wired into the CLI; `export --run` hands
+      the generated script/scene to a detected Godot (headless `--headless
+      --script` for the script path), mirroring `export --run` for Blender.
+- [ ] Per-OS Godot path detection (Linux, macOS, Windows, plus `PATH`), reusing
+      the M4 detection shape.
+- [ ] Programmatic API: `assetcraft_dcc_godot::{plan, export, material_script,
+      scene}` alongside the Blender equivalents, so the GUI (M5) drives both.
+- [ ] An installable in-editor Godot plugin (`editor_plugin`, GDScript) for
+      one-click import from inside the editor (the generated script is the
+      bridge; the plugin is a follow-on, as with the Blender addon).
+
+**DoD:** `assetcraft export <asset-id> --dcc godot` produces a scene-ready,
+correctly-textured `StandardMaterial3D`/`ORMMaterial3D` in Godot.
+
+> **Reaching the DoD.** The layout and role classification are already pure and
+> tested in M4; the new surface is the GDScript/`.tscn` emission and ORM packing,
+> which are likewise pure and covered by tests inspecting the script and scene
+> they emit and the ORM channels they write. Godot itself is not in CI, so — as
+> with Blender — the "does it look right in the viewport" check, and the CDN base
+> URL still needed to fetch the bytes, remain manual validation steps.
 
 ## Cross-cutting tracks
 
@@ -199,6 +280,7 @@ Ongoing, not tied to a single milestone:
 ## How to shape this roadmap
 
 - Propose changes via an issue or pull request against this file.
-- Tell us which DCC you need next — that directly orders M4's follow-on work.
+- Tell us which DCC you need next — that directly orders the DCC milestones
+  (Blender in M4, Godot planned in M6).
 - Milestone DoD checkboxes are the source of truth for "done"; keep them honest
   when closing work.

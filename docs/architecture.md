@@ -236,6 +236,64 @@ Media is cached beside the index, not inside it. `assetcraft library
 stores it in a content-addressed `MediaCache`, so offline browsing points at a
 local file rather than a URL.
 
+### Blender export (implemented, M4)
+
+An owned asset on disk becomes a scene-ready material: lay the files out in a
+standard tree, work out which map fills which slot, and emit a Blender script.
+
+```
+assetcraft export <id> --target dir [--run]
+        │
+        ▼
+Library::download(&id)                  find the recorded download location
+        │                               (or use an explicit --source)
+        ▼
+dcc::plan(root, id, format, files)      pure: sort into meshes/ textures/ other/,
+        │                               classify each map, group into materials
+        ▼
+dcc::export(plan, source, options)      copy files into the standard layout,
+        │                               write assetcraft_export.py
+        ▼
+dcc::material_script(plan, import)      render a version-tolerant Blender script
+        │
+        └─ --run ──▶ detect::find() ──▶ blender --background --python script
+```
+
+The planner reads only names, never bytes, so the whole layout is testable
+without Blender or a network. `classify` maps a file name to a PBR role and the
+material it belongs to; each role carries a semantic `Binding` that says how it
+wires into the Principled BSDF — glossiness inverted into roughness, ambient
+occlusion multiplied into base colour, normal and displacement through their
+nodes. Keeping the binding semantic rather than a socket name is what lets the
+script fall back across Blender's renamed sockets (`Specular` → `Specular IOR
+Level`, `import_scene.obj` → `wm.obj_import`) without the planner knowing about
+any of it.
+
+### Library download tracking (implemented, M3)
+
+```
+assetcraft download <id> … --output dir
+        │   after the files verify and land in dir
+        ▼
+Library::record_download(id, dir, fmt)  INSERT … ON CONFLICT DO UPDATE
+        │
+        ▼
+downloads(asset_id, path, format)       a second table, kept apart from the
+                                        Fab-sourced item JSON
+        │
+        ├─ assetcraft library --offline  marks each item on disk [exportable]
+        │                                (or [files missing] if the dir is gone)
+        ▼
+assetcraft export <id> --target dir     resolves the source and format here
+```
+
+`download` stores the canonicalised output directory, so the record survives a
+different working directory. The path lives in its own table rather than inside
+the `LibraryItem` JSON: local state stays out of the Fab-sourced record, so a
+later `assetcraft library` sync (which is `INSERT OR IGNORE`) never overwrites
+where a download landed, and a download can be tracked even before the item's
+metadata has been synced.
+
 ## Decisions
 
 ### We own the catalog client rather than wrapping `egs-api`
@@ -329,6 +387,17 @@ and the caller sleeps for however long that debt takes to clear at the rate. The
 next caller sees the debt and waits longer, which serialises the throughput
 without a lock held across the sleep. Capping refills at the burst size only
 limits the positive side, so an idle period cannot bank throughput it never had.
+
+### The Blender adapter writes a script rather than driving Blender
+
+There are several ways to get a material into Blender: link against its C API,
+talk to a running instance over a socket, or write a script and hand it to
+`blender --background --python`. The last wins on every axis that matters here:
+it needs no Blender at build time, it keeps the integration to one file the user
+can read, diff, and re-run by hand, and it works whether Blender is run for them
+(`export --run`) or by them. Version drift — renamed sockets, moved operators —
+is absorbed by the script looking candidates up rather than by pinning a Blender
+release in Rust.
 
 ### The library stores an item as JSON, with one denormalised column
 

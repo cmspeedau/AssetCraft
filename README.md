@@ -182,6 +182,14 @@ assetcraft library --verify
 # Cache thumbnails so the library browses offline
 assetcraft library --thumbnails
 
+# Lay a downloaded asset out as a Blender PBR material and write an import
+# script. `download` records where the files landed, so with no --source the
+# export resolves them from the library and works with the network off; pass
+# --source to export a directory directly, or --run to hand the script to a
+# detected Blender.
+assetcraft export <asset-id> --target ./MyProject
+assetcraft export <asset-id> --source ./Downloads --format fbx --run
+
 # Fetch a single file, resuming and verifying as it goes
 assetcraft fetch https://example.com/asset.zip --output asset.zip --sha256 <hash>
 
@@ -192,9 +200,6 @@ assetcraft fetch https://example.com/asset.zip --output asset.zip --limit 2M
 Still to come (see [ROADMAP.md](ROADMAP.md)):
 
 ```bash
-# Export into a Blender project
-assetcraft export <asset-id> --dcc blender --target ./MyProject
-
 # Launch the desktop app
 assetcraft-gui
 ```
@@ -221,10 +226,10 @@ The exact file format is TBD (TOML is the working assumption).
 
 | Tool | Status |
 | --- | --- |
-| Blender | Planned — first target (`v0.4`) |
-| Plain folder export | Planned |
+| Blender | CLI export works (`assetcraft export`): standard PBR layout + generated import script. In-editor addon planned. |
+| Plain folder export | Available (the layout `export` writes) |
+| Godot | Planned — next DCC (roadmap M6): glTF meshes, `StandardMaterial3D`/`ORMMaterial3D` from a packed ORM texture, generated GDScript/`.tscn`. |
 | Unreal Engine | Under consideration |
-| Godot | Under consideration |
 | Maya | Under consideration |
 | Houdini | Under consideration |
 | Unity | Under consideration |

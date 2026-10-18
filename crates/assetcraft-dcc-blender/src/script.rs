@@ -12,6 +12,8 @@
 //! candidate names and falls back between operators, rather than pinning one
 //! Blender version.
 
+use std::path::Path;
+
 use crate::plan::ExportPlan;
 
 /// Render the script that builds `plan`'s materials and imports its meshes.
@@ -20,10 +22,7 @@ pub fn material_script(plan: &ExportPlan, import_meshes: bool) -> String {
     out.push_str(PRELUDE);
 
     out.push_str(&format!("ASSET = {}\n", py_str(plan.asset.as_str())));
-    out.push_str(&format!(
-        "EXPORT_DIR = {}\n",
-        py_str(&plan.dir().to_string_lossy())
-    ));
+    out.push_str(&format!("EXPORT_DIR = {}\n", py_path(&plan.dir())));
     out.push_str(&format!(
         "IMPORT_MESHES = {}\n",
         if import_meshes { "True" } else { "False" }
@@ -31,7 +30,7 @@ pub fn material_script(plan: &ExportPlan, import_meshes: bool) -> String {
 
     out.push_str("MESHES = [\n");
     for mesh in plan.mesh_paths() {
-        out.push_str(&format!("    {},\n", py_str(&mesh.to_string_lossy())));
+        out.push_str(&format!("    {},\n", py_path(&mesh)));
     }
     out.push_str("]\n");
 
@@ -43,7 +42,7 @@ pub fn material_script(plan: &ExportPlan, import_meshes: bool) -> String {
             out.push_str(&format!(
                 "        ({}, {}),\n",
                 py_str(map.binding.as_str()),
-                py_str(&path.to_string_lossy())
+                py_path(&path)
             ));
         }
         out.push_str("    ]),\n");
@@ -52,6 +51,20 @@ pub fn material_script(plan: &ExportPlan, import_meshes: bool) -> String {
 
     out.push_str(BODY);
     out
+}
+
+/// A Python string literal for a filesystem path, with `/` separators.
+///
+/// Windows joins produce `\`, but Blender accepts `/` everywhere; embedding
+/// forward slashes keeps the generated script byte-identical across platforms
+/// and free of double-backslash escapes.
+fn py_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if cfg!(windows) {
+        py_str(&text.replace('\\', "/"))
+    } else {
+        py_str(&text)
+    }
 }
 
 /// A Python string literal, quoted and escaped, for embedding a path or name.

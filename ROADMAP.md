@@ -213,6 +213,53 @@ Make it a product.
 **DoD:** A non-developer can install AssetCraft, sign in, download an asset, and
 export it to Blender without touching a terminal.
 
+### M6 — Godot Export → `v1.1.0`
+
+The second DCC, and the first that shows the shared export trait earns its keep.
+
+Godot is a different target from Blender in three ways that shape the work: it
+wants **`.glb`/`.gltf`** (glTF is Godot's first-class, no-reimport path) rather
+than FBX/OBJ into a Python graph; it builds materials from a **`.gd` script or a
+`.tscn`/`.tres` resource** rather than a Principled BSDF node tree; and it packs
+occlusion-roughness-metallic into a **single ORM texture** rather than wiring
+separate maps. M6 reuses M4's layout and role classification and re-expresses
+them in Godot's terms.
+
+- [ ] `assetcraft-dcc-godot` adapter crate implementing the shared export trait,
+      reusing the M4 PBR layout (`meshes/`, `textures/`, `other/`) and the same
+      name-based role classification rather than re-deriving either.
+- [ ] A generated, version-tolerant Godot script (GDScript) that builds a
+      `StandardMaterial3D` (or `ORMMaterial3D`) per classified material — albedo,
+      metallic, roughness, emission, normal — and applies it to imported meshes.
+- [ ] ORM packing: combine the AO, roughness, and metallic maps the classifier
+      finds into the single occlusion/roughness/metallic texture Godot expects,
+      falling back to `StandardMaterial3D` scalars when a map is absent.
+- [ ] Mesh path: prefer glTF (`.glb`/`.gltf`) as the lossless import Godot reads
+      without a reimport step; fall back to the FBX/OBJ a Fab format already
+      provides, recorded so the caller sees which was used.
+- [ ] A scene export: a `.tscn` (text scene) referencing the material and meshes,
+      so `--run` yields a scene the user can open rather than only a script.
+- [ ] `assetcraft export --dcc godot` wired into the CLI; `export --run` hands
+      the generated script/scene to a detected Godot (headless `--headless
+      --script` for the script path), mirroring `export --run` for Blender.
+- [ ] Per-OS Godot path detection (Linux, macOS, Windows, plus `PATH`), reusing
+      the M4 detection shape.
+- [ ] Programmatic API: `assetcraft_dcc_godot::{plan, export, material_script,
+      scene}` alongside the Blender equivalents, so the GUI (M5) drives both.
+- [ ] An installable in-editor Godot plugin (`editor_plugin`, GDScript) for
+      one-click import from inside the editor (the generated script is the
+      bridge; the plugin is a follow-on, as with the Blender addon).
+
+**DoD:** `assetcraft export <asset-id> --dcc godot` produces a scene-ready,
+correctly-textured `StandardMaterial3D`/`ORMMaterial3D` in Godot.
+
+> **Reaching the DoD.** The layout and role classification are already pure and
+> tested in M4; the new surface is the GDScript/`.tscn` emission and ORM packing,
+> which are likewise pure and covered by tests inspecting the script and scene
+> they emit and the ORM channels they write. Godot itself is not in CI, so — as
+> with Blender — the "does it look right in the viewport" check, and the CDN base
+> URL still needed to fetch the bytes, remain manual validation steps.
+
 ## Cross-cutting tracks
 
 Ongoing, not tied to a single milestone:
@@ -233,6 +280,7 @@ Ongoing, not tied to a single milestone:
 ## How to shape this roadmap
 
 - Propose changes via an issue or pull request against this file.
-- Tell us which DCC you need next — that directly orders M4's follow-on work.
+- Tell us which DCC you need next — that directly orders the DCC milestones
+  (Blender in M4, Godot planned in M6).
 - Milestone DoD checkboxes are the source of truth for "done"; keep them honest
   when closing work.

@@ -228,8 +228,8 @@ The exact file format is TBD (TOML is the working assumption).
 | --- | --- |
 | Blender | CLI export works (`assetcraft export`): standard PBR layout + generated import script. In-editor addon planned. |
 | Plain folder export | Available (the layout `export` writes) |
+| Godot | Planned — next DCC (roadmap M6): glTF meshes, `StandardMaterial3D`/`ORMMaterial3D` from a packed ORM texture, generated GDScript/`.tscn`. |
 | Unreal Engine | Under consideration |
-| Godot | Under consideration |
 | Maya | Under consideration |
 | Houdini | Under consideration |
 | Unity | Under consideration |

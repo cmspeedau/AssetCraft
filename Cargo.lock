@@ -374,6 +374,7 @@ dependencies = [
  "assetcraft-auth",
  "assetcraft-catalog",
  "assetcraft-core",
+ "assetcraft-library",
  "chrono",
  "eframe",
  "egui",

@@ -12,6 +12,8 @@ name = "assetcraft-gui"
 path = "src/main.rs"
 
 [dependencies]
+eframe = "0.33"
+egui = "0.33"
 
 [lints]
 workspace = true

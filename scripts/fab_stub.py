@@ -143,6 +143,33 @@ def detail(listing):
     return body
 
 
+#: The code the stand-in sign-in page hands out.
+STUB_CODE = "stub-code"
+
+
+def oauth_token(display_name="Stub Player", account_id="acc-stub"):
+    return {
+        "access_token": "stub-access-token",
+        "refresh_token": "stub-refresh-token",
+        "token_type": "bearer",
+        "expires_in": 7200,
+        "account_id": account_id,
+        "displayName": display_name,
+    }
+
+
+def redirect_page():
+    body = f"""<!doctype html>
+<html><head><title>Sign in</title></head>
+<body style="font-family: sans-serif; background: #1b1b1b; color: #ddd; padding: 40px">
+<h1>AssetCraft developer stub</h1>
+<p>This stands in for Epic's sign-in redirect. The authorization code is:</p>
+<pre style="font-size: 20px; background: #2a2a2a; padding: 12px">{STUB_CODE}</pre>
+<p>Paste it into the AssetCraft sign-in dialog.</p>
+</body></html>"""
+    return body.encode()
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -175,6 +202,10 @@ class Handler(BaseHTTPRequestHandler):
             self.reply_json(detail(listing))
             return
 
+        if url.path == "/id/api/redirect":
+            self.reply_bytes(redirect_page(), "text/html; charset=utf-8")
+            return
+
         match = re.fullmatch(r"/img/(\d+)\.png", url.path)
         if match:
             self.reply_bytes(thumbnail(int(match.group(1))), "image/png")
@@ -182,18 +213,44 @@ class Handler(BaseHTTPRequestHandler):
 
         self.send_error(404)
 
-    def reply_json(self, payload):
-        self.reply_bytes(json.dumps(payload).encode(), "application/json")
+    def do_POST(self):  # noqa: N802 - http.server API
+        url = urlparse(self.path)
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length).decode()
+        form = parse_qs(body)
 
-    def reply_bytes(self, payload, content_type):
-        self.send_response(200)
+        if url.path == "/account/api/oauth/token":
+            grant = form.get("grant_type", [""])[0]
+            code = form.get("code", [""])[0]
+            refresh = form.get("refresh_token", [""])[0]
+            if grant == "authorization_code" and code == STUB_CODE:
+                self.reply_json(oauth_token())
+            elif grant == "refresh_token" and refresh == "stub-refresh-token":
+                self.reply_json(oauth_token())
+            else:
+                self.reply_json(
+                    {
+                        "errorCode": "invalid_grant",
+                        "errorMessage": "the code or refresh token is not the stub's",
+                    },
+                    status=400,
+                )
+            return
+
+        self.send_error(404)
+
+    def reply_json(self, payload, status=200):
+        self.reply_bytes(json.dumps(payload).encode(), "application/json", status)
+
+    def reply_bytes(self, payload, content_type, status=200):
+        self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
 
-    def log_message(self, *_args):
-        pass
+    def log_message(self, fmt, *args):
+        print(f"{self.command} {self.path} - {fmt % args}", flush=True)
 
 
 if __name__ == "__main__":

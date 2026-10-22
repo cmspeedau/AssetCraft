@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use assetcraft_core::{AssetId, Config};
 
 use crate::data::{self, Card, Filters, View};
-use crate::worker::{CatalogWorker, Command, Event};
+use crate::worker::{Account, CatalogWorker, Command, Event};
 use crate::{grid, icons, theme};
 
 /// Resolution choices for the demo download flow.
@@ -60,6 +60,12 @@ pub struct App {
     resolution: usize,
     pub jobs: Vec<Job>,
     last_time: Option<f64>,
+    account: Option<Account>,
+    sign_in_open: bool,
+    sign_in_code: String,
+    sign_in_busy: bool,
+    sign_in_error: Option<String>,
+    sign_in_url: String,
 }
 
 impl Default for App {
@@ -88,6 +94,12 @@ impl Default for App {
             resolution: 1,
             jobs: Vec::new(),
             last_time: None,
+            account: None,
+            sign_in_open: false,
+            sign_in_code: String::new(),
+            sign_in_busy: false,
+            sign_in_error: None,
+            sign_in_url: String::new(),
         }
     }
 }
@@ -104,6 +116,15 @@ impl App {
                 if let Ok(base) = std::env::var("ASSETCRAFT_FAB_BASE_URL") {
                     config.fab_base_url = base;
                 }
+                if let Ok(base) = std::env::var("ASSETCRAFT_ACCOUNT_BASE_URL") {
+                    config.account_base_url = base;
+                }
+                if let Ok(base) = std::env::var("ASSETCRAFT_EPIC_ID_BASE_URL") {
+                    config.epic_id_base_url = base;
+                }
+                app.sign_in_url = assetcraft_auth::EpicAuth::from_config(&config)
+                    .map(|auth| auth.authorization_url())
+                    .unwrap_or_default();
                 app.worker = CatalogWorker::spawn(cc.egui_ctx.clone(), config);
                 if app.worker.is_none() {
                     app.source = Source::Demo;
@@ -222,6 +243,24 @@ impl App {
                 },
                 Event::Thumbnail { id, texture } => {
                     self.textures.insert(id, texture);
+                }
+                Event::Session(account) => {
+                    self.account = account;
+                }
+                Event::SignedIn(result) => {
+                    self.sign_in_busy = false;
+                    match result {
+                        Ok(account) => {
+                            self.account = Some(account);
+                            self.sign_in_open = false;
+                            self.sign_in_code.clear();
+                            self.sign_in_error = None;
+                        }
+                        Err(error) => self.sign_in_error = Some(error),
+                    }
+                }
+                Event::SignedOut => {
+                    self.account = None;
                 }
                 Event::Fatal(error) => {
                     self.error = Some(error);
@@ -431,6 +470,8 @@ impl App {
             }
         }
 
+        let mut open_sign_in = false;
+        let mut sign_out = false;
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
             ui.horizontal(|ui| if ui.button("\u{2699}  Settings").clicked() {});
             ui.horizontal(|ui| {
@@ -451,7 +492,159 @@ impl App {
                 .size(11.0)
                 .color(theme::FG_MUTED),
             );
+            ui.add_space(2.0);
+            match &self.account {
+                Some(account) => {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(grid::ellipsize(&account.name, 18))
+                                .size(11.0)
+                                .color(theme::FG_SECONDARY),
+                        );
+                        if ui.small_button("Sign out").clicked() {
+                            sign_out = true;
+                        }
+                    });
+                }
+                None => {
+                    if selectable(ui, false, "Sign in to Epic", None).clicked() {
+                        open_sign_in = true;
+                    }
+                }
+            }
         });
+        if open_sign_in {
+            self.open_sign_in();
+        }
+        if sign_out {
+            if let Some(worker) = &self.worker {
+                worker.send(Command::SignOut);
+            }
+        }
+    }
+
+    fn open_sign_in(&mut self) {
+        self.sign_in_open = true;
+        self.sign_in_code.clear();
+        self.sign_in_error = None;
+        self.sign_in_busy = false;
+    }
+
+    /// Step-by-step sign-in: open Epic's page, paste the code it shows.
+    fn sign_in_dialog(&mut self, ctx: &egui::Context) {
+        let mut submit = false;
+        let mut cancel = false;
+        let modal = egui::Modal::new(egui::Id::new("sign-in")).show(ctx, |ui| {
+            ui.set_width(430.0);
+            ui.label(
+                egui::RichText::new("Sign in to Epic Games")
+                    .size(17.0)
+                    .strong()
+                    .color(theme::FG),
+            );
+            ui.label(
+                egui::RichText::new(
+                    "AssetCraft signs in with Epic's launcher client, the same flow the \
+                     command-line tool uses. The token stays on this machine.",
+                )
+                .size(11.0)
+                .color(theme::FG_MUTED),
+            );
+
+            ui.add_space(10.0);
+            ui.label(
+                egui::RichText::new("1. Open the sign-in page in your browser")
+                    .size(12.0)
+                    .color(theme::FG_SECONDARY),
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Open sign-in page").clicked() {
+                    ctx.open_url(egui::OpenUrl::new_tab(self.sign_in_url.as_str()));
+                }
+                if ui.button("Copy link").clicked() {
+                    ctx.copy_text(self.sign_in_url.clone());
+                }
+            });
+            ui.label(
+                egui::RichText::new(&self.sign_in_url)
+                    .monospace()
+                    .size(10.0)
+                    .color(theme::FG_MUTED),
+            );
+
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new("2. Paste the code the page shows")
+                    .size(12.0)
+                    .color(theme::FG_SECONDARY),
+            );
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut self.sign_in_code)
+                    .hint_text("authorization code")
+                    .desired_width(f32::INFINITY),
+            );
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                submit = true;
+            }
+
+            if let Some(error) = &self.sign_in_error {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(error)
+                        .size(11.0)
+                        .color(egui::Color32::from_rgb(226, 128, 128)),
+                );
+            }
+
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let ready = !self.sign_in_code.trim().is_empty() && !self.sign_in_busy;
+                let button = egui::Button::new(
+                    egui::RichText::new("Sign in")
+                        .strong()
+                        .color(egui::Color32::WHITE),
+                )
+                .min_size(egui::vec2(96.0, 28.0))
+                .fill(theme::GREEN);
+                if ui.add_enabled(ready, button).clicked() {
+                    submit = true;
+                }
+                if self.sign_in_busy {
+                    ui.spinner();
+                    ui.label(
+                        egui::RichText::new("Exchanging the code...")
+                            .size(11.0)
+                            .color(theme::FG_MUTED),
+                    );
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        });
+
+        if modal.should_close() || cancel {
+            self.sign_in_open = false;
+        }
+        if submit && !self.sign_in_busy {
+            self.submit_sign_in();
+        }
+    }
+
+    fn submit_sign_in(&mut self) {
+        let code = self.sign_in_code.trim().to_owned();
+        if code.is_empty() {
+            return;
+        }
+        let Some(worker) = &self.worker else {
+            self.sign_in_error = Some("The background worker is not running.".to_owned());
+            return;
+        };
+        worker.send(Command::SignIn { code });
+        self.sign_in_busy = true;
+        self.sign_in_error = None;
     }
 
     fn search_bar(&mut self, ui: &mut egui::Ui) {
@@ -731,9 +924,11 @@ impl App {
                 });
                 let response = ui.add_enabled(!live, button);
                 if live {
-                    response.on_disabled_hover_text(
-                        "Sign in to Epic to download assets (library milestone)",
-                    );
+                    response.on_disabled_hover_text(if self.account.is_some() {
+                        "Downloads arrive with the library milestone"
+                    } else {
+                        "Sign in to Epic to download assets"
+                    });
                 } else if response.clicked() {
                     self.start_download(i);
                 }
@@ -848,6 +1043,10 @@ impl eframe::App for App {
                 .show(ctx, |ui| self.detail(ui, i));
         }
 
+        if self.sign_in_open {
+            self.sign_in_dialog(ctx);
+        }
+
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -865,23 +1064,41 @@ impl eframe::App for App {
                         View::Local => "the local library",
                         _ => self.view.label(),
                     };
+                    let signed_in = self.account.is_some();
+                    let mut open_sign_in = false;
                     ui.centered_and_justified(|ui| {
                         ui.vertical(|ui| {
                             ui.label(
-                                egui::RichText::new(format!("{what} needs an Epic account"))
-                                    .size(15.0)
-                                    .color(theme::FG_SECONDARY),
+                                egui::RichText::new(if signed_in {
+                                    format!("{what} arrives with the library view")
+                                } else {
+                                    format!("{what} needs an Epic account")
+                                })
+                                .size(15.0)
+                                .color(theme::FG_SECONDARY),
                             );
                             ui.label(
-                                egui::RichText::new(
-                                    "Signing in and the owned library arrive with the \
-                                     account milestone; switch to demo data to explore the shell.",
-                                )
+                                egui::RichText::new(if signed_in {
+                                    "AssetCraft will list what you own here once the owned-library \
+                                     client is wired."
+                                } else {
+                                    "Sign in to Epic to reach your Fab library. Until then, demo data \
+                                     shows what the shell can do."
+                                })
                                 .size(12.0)
                                 .color(theme::FG_MUTED),
                             );
+                            if !signed_in {
+                                ui.add_space(6.0);
+                            }
+                            if !signed_in && ui.button("Sign in to Epic").clicked() {
+                                open_sign_in = true;
+                            }
                         });
                     });
+                    if open_sign_in {
+                        self.open_sign_in();
+                    }
                     return;
                 }
 

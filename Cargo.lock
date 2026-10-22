@@ -371,6 +371,7 @@ dependencies = [
 name = "assetcraft-gui"
 version = "0.1.0"
 dependencies = [
+ "assetcraft-auth",
  "assetcraft-catalog",
  "assetcraft-core",
  "chrono",

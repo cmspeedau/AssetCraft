@@ -12,6 +12,7 @@ name = "assetcraft-gui"
 path = "src/main.rs"
 
 [dependencies]
+assetcraft-auth.workspace = true
 assetcraft-catalog.workspace = true
 assetcraft-core.workspace = true
 chrono.workspace = true

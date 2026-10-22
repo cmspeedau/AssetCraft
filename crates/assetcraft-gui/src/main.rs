@@ -16,8 +16,13 @@
 //!
 //! ```text
 //! python3 scripts/fab_stub.py 8791
-//! ASSETCRAFT_FAB_BASE_URL=http://127.0.0.1:8791 cargo run -p assetcraft-gui
+//! ASSETCRAFT_FAB_BASE_URL=http://127.0.0.1:8791 \
+//! ASSETCRAFT_ACCOUNT_BASE_URL=http://127.0.0.1:8791 \
+//! ASSETCRAFT_EPIC_ID_BASE_URL=http://127.0.0.1:8791 cargo run -p assetcraft-gui
 //! ```
+//!
+//! The stub also serves a stand-in Epic sign-in page and token endpoint, so the
+//! sign-in path is exercised the same way (the code is `stub-code`).
 
 #![forbid(unsafe_code)]
 

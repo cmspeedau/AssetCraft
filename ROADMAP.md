@@ -207,7 +207,8 @@ Make it a product.
       live catalog client (with an offline demo catalog).
 - [ ] Download queue wired to the download engine.
 - [ ] Owned library view and settings.
-- [ ] Login and account status inside the app.
+- [x] Login and account status inside the app (Epic launcher flow, token shared
+      with the CLI).
 - [ ] Installers/artifacts for Windows (`.msi`/`.zip`), macOS (`.dmg`), Linux
       (`.AppImage`/`.deb`).
 - [ ] Auto-update.

@@ -262,7 +262,7 @@ pub fn draw_placeholder(painter: &Painter, rect: Rect, hue: f32) {
 }
 
 /// Cut `text` to `max` characters on a character boundary, adding an ellipsis.
-fn ellipsize(text: &str, max: usize) -> String {
+pub(crate) fn ellipsize(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_owned();
     }

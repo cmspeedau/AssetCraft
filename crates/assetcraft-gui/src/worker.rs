@@ -8,6 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use assetcraft_auth::{ensure_fresh_token, EpicAuth, EpicToken, FileTokenStore, TokenStore};
 use assetcraft_catalog::FabClient;
 use assetcraft_core::{AssetDetail, AssetId, AssetSummary, Config, Page, SearchQuery};
 use tokio::sync::{mpsc, Semaphore};
@@ -18,6 +19,24 @@ const THUMBNAIL_CONCURRENCY: usize = 6;
 const MAX_THUMBNAIL_BYTES: usize = 8 * 1024 * 1024;
 /// Textures are downscaled before upload; cards never show more than this.
 const THUMBNAIL_EDGE: u32 = 512;
+
+/// A signed-in Epic account, as the UI needs it.
+#[derive(Clone, Debug)]
+pub struct Account {
+    /// Display name, or the account id when Epic did not send one.
+    pub name: String,
+}
+
+impl Account {
+    fn from_token(token: &EpicToken) -> Self {
+        let name = token
+            .display_name
+            .clone()
+            .or_else(|| token.account_id.clone())
+            .unwrap_or_else(|| "Epic account".to_owned());
+        Self { name }
+    }
+}
 
 /// Work the UI hands to the worker.
 pub enum Command {
@@ -31,6 +50,10 @@ pub enum Command {
     Detail(AssetId),
     /// Download and decode a thumbnail into a texture.
     Thumbnail { id: String, url: String },
+    /// Exchange a browser authorization code for a token and store it.
+    SignIn { code: String },
+    /// Forget the stored token.
+    SignOut,
 }
 
 /// Results the worker hands back.
@@ -50,6 +73,12 @@ pub enum Event {
         id: String,
         texture: egui::TextureHandle,
     },
+    /// What the token store held when the worker started.
+    Session(Option<Account>),
+    /// The result of exchanging a sign-in code.
+    SignedIn(Result<Account, String>),
+    /// The stored token was cleared.
+    SignedOut,
     /// The worker could not be set up at all; the UI should fall back to demo
     /// data.
     Fatal(String),
@@ -134,6 +163,29 @@ async fn run(
         }
     };
 
+    let auth = match EpicAuth::from_config(&config) {
+        Ok(auth) => auth,
+        Err(error) => {
+            let _ = events.send(Event::Fatal(error.to_string()));
+            ctx.request_repaint();
+            return;
+        }
+    };
+    let store = FileTokenStore::new(config.paths.token_file());
+
+    // Tell the UI who is signed in, refreshing a token that is close to expiry.
+    {
+        let auth = auth.clone();
+        let store = store.clone();
+        let events = events.clone();
+        let ctx = ctx.clone();
+        tokio::spawn(async move {
+            let account = restore_session(&auth, &store).await;
+            let _ = events.send(Event::Session(account));
+            ctx.request_repaint();
+        });
+    }
+
     let permits = Arc::new(Semaphore::new(THUMBNAIL_CONCURRENCY));
 
     while let Some(command) = commands.recv().await {
@@ -172,6 +224,33 @@ async fn run(
                     ctx.request_repaint();
                 });
             }
+            Command::SignIn { code } => {
+                let auth = auth.clone();
+                let store = store.clone();
+                let events = events.clone();
+                let ctx = ctx.clone();
+                tokio::spawn(async move {
+                    let result = match auth.exchange_code(code.trim()).await {
+                        Ok(token) => match store.save(&token) {
+                            Ok(()) => Ok(Account::from_token(&token)),
+                            Err(error) => Err(friendly(&error.to_string())),
+                        },
+                        Err(error) => Err(friendly(&error.to_string())),
+                    };
+                    let _ = events.send(Event::SignedIn(result));
+                    ctx.request_repaint();
+                });
+            }
+            Command::SignOut => {
+                let store = store.clone();
+                let events = events.clone();
+                let ctx = ctx.clone();
+                tokio::spawn(async move {
+                    let _ = store.clear();
+                    let _ = events.send(Event::SignedOut);
+                    ctx.request_repaint();
+                });
+            }
             Command::Thumbnail { id, url } => {
                 let http = http.clone();
                 let permits = Arc::clone(&permits);
@@ -194,6 +273,19 @@ async fn run(
                 });
             }
         }
+    }
+}
+
+/// The account the token store already holds, refreshed when it is stale.
+///
+/// A refresh that fails (offline, expired refresh token) still reports the
+/// stored account: the UI should show who is signed in and let the next
+/// authenticated call surface the problem.
+async fn restore_session(auth: &EpicAuth, store: &FileTokenStore) -> Option<Account> {
+    let stored = store.load().ok().flatten()?;
+    match ensure_fresh_token(auth, store).await {
+        Ok(token) => Some(Account::from_token(&token)),
+        Err(_) => Some(Account::from_token(&stored)),
     }
 }
 
@@ -257,7 +349,32 @@ fn decode(bytes: &[u8]) -> Option<egui::ColorImage> {
 
 #[cfg(test)]
 mod tests {
-    use super::friendly;
+    use super::{friendly, Account};
+    use assetcraft_auth::EpicToken;
+
+    fn token(display: Option<&str>, account: Option<&str>) -> EpicToken {
+        EpicToken {
+            access_token: "access".to_owned(),
+            refresh_token: None,
+            token_type: "bearer".to_owned(),
+            expires_at: None,
+            account_id: account.map(str::to_owned),
+            display_name: display.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn accounts_prefer_the_display_name() {
+        assert_eq!(
+            Account::from_token(&token(Some("Player One"), Some("acc-1"))).name,
+            "Player One"
+        );
+        assert_eq!(
+            Account::from_token(&token(None, Some("acc-1"))).name,
+            "acc-1"
+        );
+        assert_eq!(Account::from_token(&token(None, None)).name, "Epic account");
+    }
 
     #[test]
     fn challenge_pages_are_reduced_to_one_line() {

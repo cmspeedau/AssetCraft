@@ -203,8 +203,10 @@ correctly-textured material in Blender.
 
 Make it a product.
 
-- [ ] egui desktop app: browse, search, filter, asset detail, download queue,
-      library view, settings.
+- [x] egui desktop shell: browse, search, filter, asset detail, driven by the
+      live catalog client (with an offline demo catalog).
+- [ ] Download queue wired to the download engine.
+- [ ] Owned library view and settings.
 - [ ] Login and account status inside the app.
 - [ ] Installers/artifacts for Windows (`.msi`/`.zip`), macOS (`.dmg`), Linux
       (`.AppImage`/`.deb`).

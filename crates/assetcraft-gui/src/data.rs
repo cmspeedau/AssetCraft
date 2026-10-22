@@ -1,89 +1,109 @@
-//! The catalog the shell browses.
+//! The catalog view model.
 //!
-//! M5's first slice runs on a deterministic mock so the UI can be built and
-//! reviewed before the live `assetcraft-catalog` client is wired in; the
-//! shapes here (`Asset`, `Filters`, `View`) are what the real client will
-//! later fill.
+//! The grid renders [`Card`]s, whether they came from a live Fab search or
+//! from the demo dataset used when the API is unreachable. Keeping one shape
+//! for both means the UI never branches on the source.
 
-/// What kind of thing an asset is, mirroring the catalog taxonomy.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Category {
-    Assets3D,
-    Plants,
-    Surfaces,
-    Decals,
-}
+use assetcraft_core::{AssetSummary, SearchQuery};
 
-impl Category {
-    pub const ALL: [Category; 4] = [
-        Category::Assets3D,
-        Category::Plants,
-        Category::Surfaces,
-        Category::Decals,
-    ];
+/// How many listings a search page asks for.
+pub const PAGE_SIZE: u32 = 60;
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Category::Assets3D => "3D Assets",
-            Category::Plants => "3D Plants",
-            Category::Surfaces => "Surfaces",
-            Category::Decals => "Decals",
-        }
-    }
-}
-
-/// How weathered a scan is; the catalog's `state` facet.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum State {
-    New,
-    Weathered,
-    Damaged,
-}
-
-impl State {
-    pub const ALL: [State; 3] = [State::New, State::Weathered, State::Damaged];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            State::New => "New",
-            State::Weathered => "Weathered",
-            State::Damaged => "Damaged",
-        }
-    }
-}
-
-/// One browsable asset.
+/// One card in the grid.
 #[derive(Clone, Debug)]
-pub struct Asset {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub category: Category,
-    pub state: State,
-    pub environment: &'static str,
-    pub size_mb: u32,
+pub struct Card {
+    pub id: String,
+    pub title: String,
+    pub seller: Option<String>,
+    pub listing_type: Option<String>,
     pub free: bool,
-    pub is_new: bool,
-    pub favorite: bool,
-    pub downloaded: bool,
-    /// Hue in degrees driving the generated thumbnail.
+    pub rating: Option<f64>,
+    pub tags: Vec<String>,
+    pub thumbnail: Option<String>,
+    /// Stable hue in degrees for the procedural placeholder.
     pub hue: f32,
+    /// Whether the listing appeared recently enough for a NEW pill.
+    pub is_new: bool,
 }
 
-impl Asset {
-    /// Meta line under the detail preview: `Surfaces · Weathered · 820 MB`.
-    pub fn meta_line(&self) -> String {
-        format!(
-            "{} \u{00b7} {} \u{00b7} {} MB",
-            self.category.label(),
-            self.state.label(),
-            self.size_mb
-        )
+impl Card {
+    /// Project a marketplace summary into the grid's card.
+    pub fn from_summary(summary: &AssetSummary) -> Self {
+        Self {
+            id: summary.id.as_str().to_owned(),
+            title: summary.display_title(),
+            seller: summary.seller_name().map(str::to_owned),
+            listing_type: summary.listing_type.clone(),
+            free: summary.is_free,
+            rating: summary.rating.as_ref().and_then(|r| r.average),
+            tags: summary.tags.iter().filter_map(|t| t.name.clone()).collect(),
+            thumbnail: summary.thumbnail_url.clone(),
+            hue: hue_for(summary.id.as_str()),
+            is_new: is_recent(summary.published_at.as_deref()),
+        }
     }
+}
+
+/// How long a listing stays "new", in days.
+const NEW_WITHIN_DAYS: i64 = 60;
+
+/// Whether a publication timestamp is recent enough to show a NEW pill.
+fn is_recent(published_at: Option<&str>) -> bool {
+    let Some(raw) = published_at else {
+        return false;
+    };
+    let Ok(published) = chrono::DateTime::parse_from_rfc3339(raw) else {
+        return false;
+    };
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(NEW_WITHIN_DAYS);
+    published.with_timezone(&chrono::Utc) > cutoff
+}
+
+/// A stable 0..360 hue for an id, so placeholders keep their colour across
+/// restarts and don't all look alike.
+pub fn hue_for(key: &str) -> f32 {
+    let mut hash: u32 = 2_166_136_261;
+    for byte in key.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    (hash % 360) as f32
+}
+
+/// The listing types the filter bar offers, as `(Fab slug, label)`.
+pub const LISTING_TYPES: &[(&str, &str)] = &[
+    ("3d-model", "3D Model"),
+    ("3d-scene", "3D Scene"),
+    ("3d-plant", "3D Plant"),
+    ("material", "Material"),
+    ("decal", "Decal"),
+    ("tool-and-plugin", "Tool & Plugin"),
+    ("audio", "Audio"),
+    ("vfx", "VFX"),
+];
+
+/// Human label for a listing-type slug.
+pub fn listing_label(slug: Option<&str>) -> String {
+    let Some(slug) = slug else {
+        return "Listing".to_owned();
+    };
+    LISTING_TYPES
+        .iter()
+        .find(|(code, _)| *code == slug)
+        .map(|(_, label)| (*label).to_owned())
+        .unwrap_or_else(|| {
+            let mut chars = slug.replace('-', " ");
+            if let Some(first) = chars.get_mut(0..1) {
+                first.make_ascii_uppercase();
+            }
+            chars
+        })
 }
 
 /// The active nav tab.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum View {
+    #[default]
     Home,
     Collections,
     Free,
@@ -93,6 +113,15 @@ pub enum View {
 }
 
 impl View {
+    pub const ALL: [View; 6] = [
+        View::Home,
+        View::Collections,
+        View::Free,
+        View::Purchased,
+        View::Favorites,
+        View::Local,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             View::Home => "Home",
@@ -103,206 +132,280 @@ impl View {
             View::Local => "Local",
         }
     }
+
+    /// Whether the view needs an Epic account, and so cannot be filled yet.
+    pub fn needs_account(self) -> bool {
+        matches!(self, View::Collections | View::Purchased | View::Local)
+    }
 }
 
-/// The dropdown filter bar. `None` means "All".
+/// The filter bar's state. `None` means "all types".
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Filters {
-    pub category: Option<Category>,
-    pub state: Option<State>,
-    pub environment: Option<&'static str>,
+    /// Index into [`LISTING_TYPES`].
+    pub listing_type: Option<usize>,
 }
 
-/// The visible list for a view + filters + search text.
-pub fn visible(assets: &[Asset], view: View, filters: &Filters, query: &str) -> Vec<usize> {
-    let query = query.trim().to_lowercase();
-    assets
+impl Filters {
+    pub fn listing_slug(&self) -> Option<&'static str> {
+        self.listing_type.map(|i| LISTING_TYPES[i].0)
+    }
+}
+
+/// Build the API query for the current search box and filters.
+///
+/// This is the one place UI state turns into protocol, so both "first page" and
+/// "next page" go through it and stay in sync.
+pub fn query_for(
+    filters: &Filters,
+    text: &str,
+    cursor: Option<String>,
+    free_only: bool,
+) -> SearchQuery {
+    let text = text.trim();
+    let mut query = SearchQuery {
+        text: (!text.is_empty()).then(|| text.to_owned()),
+        free_only,
+        limit: Some(PAGE_SIZE),
+        cursor,
+        ..Default::default()
+    };
+    if let Some(slug) = filters.listing_slug() {
+        query.listing_types.push(slug.to_owned());
+    }
+    query
+}
+
+/// Indices of the cards a view shows, before any API-side filtering.
+///
+/// Favourites and the local library are client-side, so they filter here even
+/// for live results.
+pub fn visible(
+    cards: &[Card],
+    view: View,
+    favorites: &std::collections::HashSet<String>,
+    local: &std::collections::HashSet<String>,
+) -> Vec<usize> {
+    cards
         .iter()
         .enumerate()
-        .filter(|(_, a)| match view {
-            View::Home | View::Collections => true,
-            View::Free => a.free,
-            View::Purchased => !a.free,
-            View::Favorites => a.favorite,
-            View::Local => a.downloaded,
+        .filter(|(_, card)| match view {
+            View::Home | View::Collections | View::Purchased => true,
+            View::Free => card.free,
+            View::Favorites => favorites.contains(&card.id),
+            View::Local => local.contains(&card.id),
         })
-        .filter(|(_, a)| filters.category.is_none_or(|c| a.category == c))
-        .filter(|(_, a)| filters.state.is_none_or(|s| a.state == s))
-        .filter(|(_, a)| {
-            filters
-                .environment
-                .is_none_or(|e| a.environment.eq_ignore_ascii_case(e))
-        })
-        .filter(|(_, a)| query.is_empty() || a.name.to_lowercase().contains(&query))
         .map(|(i, _)| i)
         .collect()
 }
 
-/// Counts shown next to each nav tab.
-pub fn counts(assets: &[Asset]) -> Vec<(View, usize)> {
-    let count = |p: fn(&Asset) -> bool| assets.iter().filter(|a| p(a)).count();
-    vec![
-        (View::Home, assets.len()),
-        (View::Collections, 12),
-        (View::Free, count(|a| a.free)),
-        (View::Purchased, count(|a| !a.free)),
-        (View::Favorites, count(|a| a.favorite)),
-        (View::Local, count(|a| a.downloaded)),
-    ]
-}
-
-/// A download in the drawer.
-pub struct Job {
-    pub name: &'static str,
-    pub progress: f32,
-    pub speed_mbps: f32,
-}
-
-/// The mock catalog, stable across runs so screenshots compare.
-pub fn mock_assets() -> Vec<Asset> {
-    const NAMES: &[(&str, &str, Category, State, &str)] = &[
+/// The offline dataset: real-looking listings so the shell can be reviewed
+/// without the marketplace, and so the demo path exercises the same cards.
+pub fn demo_cards() -> Vec<Card> {
+    /// Title, seller, listing type, free, rating, tags.
+    type DemoRow = (
+        &'static str,
+        &'static str,
+        &'static str,
+        bool,
+        f64,
+        &'static [&'static str],
+    );
+    const ROWS: &[DemoRow] = &[
         (
-            "A",
             "Flagstone Floor 2x2 M",
-            Category::Surfaces,
-            State::Weathered,
-            "Urban",
+            "Grim Wilder",
+            "material",
+            true,
+            4.7,
+            &["stone", "floor", "pbr"],
         ),
         (
-            "B",
             "Mossy Boulder Cluster",
-            Category::Assets3D,
-            State::Weathered,
-            "Forest",
+            "Rock Forge",
+            "3d-model",
+            true,
+            4.9,
+            &["rock", "nature"],
         ),
         (
-            "C",
             "Cracked Asphalt Patch",
-            Category::Surfaces,
-            State::Damaged,
-            "Urban",
+            "Urban Decay",
+            "material",
+            false,
+            4.4,
+            &["asphalt", "road"],
         ),
         (
-            "D",
             "Coastal Cliff Rock",
-            Category::Assets3D,
-            State::New,
-            "Coast",
+            "Rock Forge",
+            "3d-model",
+            false,
+            4.8,
+            &["cliff", "coast"],
         ),
         (
-            "E",
             "Palm Frond Group",
-            Category::Plants,
-            State::New,
-            "Coast",
+            "Greenhouse",
+            "3d-plant",
+            true,
+            4.6,
+            &["palm", "tropical"],
         ),
         (
-            "F",
             "Rust Decal Set",
-            Category::Decals,
-            State::Damaged,
-            "Urban",
+            "Urban Decay",
+            "decal",
+            false,
+            4.2,
+            &["rust", "decal"],
         ),
         (
-            "G",
             "Desert Dune Sand",
-            Category::Surfaces,
-            State::New,
-            "Desert",
+            "Dune Works",
+            "material",
+            true,
+            4.5,
+            &["sand", "desert"],
         ),
         (
-            "H",
             "Wooden Chest",
-            Category::Assets3D,
-            State::Weathered,
-            "Urban",
+            "Prop Shop",
+            "3d-model",
+            true,
+            4.9,
+            &["chest", "wood"],
         ),
-        ("I", "Fern Cluster", Category::Plants, State::New, "Forest"),
         (
-            "J",
+            "Fern Cluster",
+            "Greenhouse",
+            "3d-plant",
+            false,
+            4.7,
+            &["fern", "forest"],
+        ),
+        (
             "Graffiti Decals",
-            Category::Decals,
-            State::New,
-            "Urban",
+            "Street Layer",
+            "decal",
+            true,
+            4.1,
+            &["graffiti", "urban"],
         ),
         (
-            "K",
             "Sandy Gravel Ground",
-            Category::Surfaces,
-            State::New,
-            "Desert",
+            "Dune Works",
+            "material",
+            false,
+            4.3,
+            &["gravel", "ground"],
         ),
         (
-            "L",
             "Granite Block",
-            Category::Assets3D,
-            State::Damaged,
-            "Forest",
+            "Rock Forge",
+            "3d-model",
+            false,
+            4.6,
+            &["granite", "stone"],
         ),
         (
-            "M",
             "Ivy Vine",
-            Category::Plants,
-            State::Weathered,
-            "Forest",
+            "Greenhouse",
+            "3d-plant",
+            false,
+            4.8,
+            &["ivy", "vine"],
         ),
         (
-            "N",
             "Peeling Paint Decal",
-            Category::Decals,
-            State::Damaged,
-            "Urban",
+            "Urban Decay",
+            "decal",
+            true,
+            4.0,
+            &["paint", "grunge"],
         ),
-        ("O", "Coral Rubble", Category::Assets3D, State::New, "Coast"),
         (
-            "P",
+            "Coral Rubble",
+            "Reef Lab",
+            "3d-model",
+            true,
+            4.4,
+            &["coral", "sea"],
+        ),
+        (
             "Sandstone Wall",
-            Category::Surfaces,
-            State::Weathered,
-            "Desert",
+            "Dune Works",
+            "material",
+            false,
+            4.7,
+            &["sandstone", "wall"],
         ),
-        ("Q", "Seagrass Patch", Category::Plants, State::New, "Coast"),
-        ("R", "Mud Decals", Category::Decals, State::New, "Forest"),
         (
-            "S",
+            "Seagrass Patch",
+            "Reef Lab",
+            "3d-plant",
+            true,
+            4.5,
+            &["grass", "coast"],
+        ),
+        (
+            "Mud Decals",
+            "Street Layer",
+            "decal",
+            false,
+            4.2,
+            &["mud", "decal"],
+        ),
+        (
             "Basalt Cobble",
-            Category::Surfaces,
-            State::Damaged,
-            "Coast",
+            "Rock Forge",
+            "material",
+            false,
+            4.8,
+            &["basalt", "cobble"],
         ),
-        ("T", "Pine Sapling", Category::Plants, State::New, "Forest"),
         (
-            "U",
+            "Pine Sapling",
+            "Greenhouse",
+            "3d-plant",
+            true,
+            4.6,
+            &["pine", "tree"],
+        ),
+        (
             "Barrel Crate Stack",
-            Category::Assets3D,
-            State::Weathered,
-            "Urban",
+            "Prop Shop",
+            "3d-model",
+            false,
+            4.3,
+            &["crate", "barrel"],
         ),
         (
-            "V",
             "Tire Tracks Decal",
-            Category::Decals,
-            State::Weathered,
-            "Desert",
+            "Street Layer",
+            "decal",
+            true,
+            3.9,
+            &["tracks", "dirt"],
         ),
     ];
 
-    NAMES
-        .iter()
+    ROWS.iter()
         .enumerate()
-        .map(|(i, (id, name, category, state, environment))| Asset {
-            id,
-            name,
-            category: *category,
-            state: *state,
-            environment,
-            size_mb: 120 + (i as u32 * 137) % 1400,
-            free: i % 3 != 0,
-            is_new: i % 5 < 2,
-            favorite: i % 7 == 0,
-            downloaded: i % 6 == 0,
-            hue: (i as f32 * 47.0) % 360.0,
-        })
+        .map(
+            |(n, (title, seller, listing_type, free, rating, tags))| Card {
+                id: format!("demo-{n:02}"),
+                title: (*title).to_owned(),
+                seller: Some((*seller).to_owned()),
+                listing_type: Some((*listing_type).to_owned()),
+                free: *free,
+                rating: Some(*rating),
+                tags: tags.iter().map(|t| (*t).to_owned()).collect(),
+                thumbnail: None,
+                hue: hue_for(title),
+                is_new: n % 5 < 2,
+            },
+        )
         .collect()
 }
 
@@ -311,33 +414,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_view_tabs_partition_the_catalog() {
-        let assets = mock_assets();
-        let all = visible(&assets, View::Home, &Filters::default(), "");
-        assert_eq!(all.len(), assets.len());
-        let local = visible(&assets, View::Local, &Filters::default(), "");
-        assert!(local.len() < all.len());
-        assert!(local.iter().all(|&i| assets[i].downloaded));
+    fn the_query_carries_text_type_and_free_flag() {
+        let filters = Filters {
+            listing_type: Some(0),
+        };
+        let query = query_for(&filters, "  mossy  ", None, true);
+        assert_eq!(query.text.as_deref(), Some("mossy"));
+        assert_eq!(query.listing_types, vec!["3d-model".to_owned()]);
+        assert!(query.free_only);
+        assert_eq!(query.limit, Some(PAGE_SIZE));
+        assert!(query.cursor.is_none());
     }
 
     #[test]
-    fn search_and_filters_narrow_the_grid() {
-        let assets = mock_assets();
-        let hits = visible(&assets, View::Home, &Filters::default(), "rock");
-        assert!(!hits.is_empty());
-        assert!(hits.iter().all(|&i| assets[i].name.contains("Rock")));
+    fn a_blank_search_sends_no_text() {
+        let query = query_for(&Filters::default(), "   ", None, false);
+        assert!(query.text.is_none());
+        assert!(query.listing_types.is_empty());
+        assert!(!query.free_only);
+    }
 
-        let surfaces = visible(
-            &assets,
-            View::Home,
-            &Filters {
-                category: Some(Category::Surfaces),
-                ..Default::default()
-            },
-            "",
+    #[test]
+    fn hue_is_stable_and_in_range() {
+        let first = hue_for("abc-123");
+        assert_eq!(first, hue_for("abc-123"));
+        assert_ne!(first, hue_for("abc-124"));
+        assert!((0.0..360.0).contains(&first));
+    }
+
+    #[test]
+    fn listing_labels_fall_back_to_the_slug() {
+        assert_eq!(listing_label(Some("3d-model")), "3D Model");
+        assert_eq!(listing_label(Some("custom-kind")), "Custom kind");
+        assert_eq!(listing_label(None), "Listing");
+    }
+
+    #[test]
+    fn views_filter_client_side_sets() {
+        let cards = demo_cards();
+        let favorites = std::collections::HashSet::from([cards[0].id.clone()]);
+        let local = std::collections::HashSet::new();
+        assert_eq!(
+            visible(&cards, View::Favorites, &favorites, &local),
+            vec![0]
         );
-        assert!(surfaces
-            .iter()
-            .all(|&i| assets[i].category == Category::Surfaces));
+        assert!(visible(&cards, View::Local, &favorites, &local).is_empty());
+        let free = visible(&cards, View::Free, &favorites, &local);
+        assert!(free.iter().all(|&i| cards[i].free));
+        assert_eq!(
+            visible(&cards, View::Home, &favorites, &local).len(),
+            cards.len()
+        );
     }
 }

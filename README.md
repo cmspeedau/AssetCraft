@@ -106,7 +106,7 @@ headless CLI.
 | `assetcraft-library` | lib | Local SQLite library index, thumbnails, dedup, offline browse. |
 | `assetcraft-dcc-blender` | adapter | Blender exporter and Python addon bridge. |
 | `assetcraft-cli` | bin | Headless binary for scripted / CI workflows. |
-| `assetcraft-gui` | bin | egui desktop application. |
+| `assetcraft-gui` | bin | egui desktop app: browse, search, filter, and open asset details. |
 
 Dependency direction is one-way: binaries depend on the service and core crates,
 never the reverse. DCC adapters implement a shared export trait defined in
@@ -195,12 +195,8 @@ assetcraft fetch https://example.com/asset.zip --output asset.zip --sha256 <hash
 
 # Cap the download rate (bytes per second; `k`/`M` suffixes are accepted)
 assetcraft fetch https://example.com/asset.zip --output asset.zip --limit 2M
-```
 
-Still to come (see [ROADMAP.md](ROADMAP.md)):
-
-```bash
-# Launch the desktop app
+# Launch the desktop app (`--demo` uses the offline catalog)
 assetcraft-gui
 ```
 

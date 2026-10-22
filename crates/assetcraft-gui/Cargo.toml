@@ -12,6 +12,18 @@ name = "assetcraft-gui"
 path = "src/main.rs"
 
 [dependencies]
+assetcraft-catalog.workspace = true
+assetcraft-core.workspace = true
+chrono.workspace = true
+eframe = "0.33"
+egui = "0.33"
+reqwest.workspace = true
+image = { version = "0.25", default-features = false, features = [
+    "jpeg",
+    "png",
+    "webp",
+] }
+tokio.workspace = true
 
 [lints]
 workspace = true

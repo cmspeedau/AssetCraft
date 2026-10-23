@@ -10,8 +10,10 @@ use std::time::Duration;
 
 use assetcraft_auth::{ensure_fresh_token, EpicAuth, EpicToken, FileTokenStore, TokenStore};
 use assetcraft_catalog::FabClient;
-use assetcraft_core::{AssetDetail, AssetId, AssetSummary, Config, LibraryItem, Page, SearchQuery};
-use assetcraft_library::MediaCache;
+use assetcraft_core::{
+    AssetDetail, AssetId, AssetSummary, Config, LibraryItem, Page, SearchQuery, SelectionCriteria,
+};
+use assetcraft_library::{Library, MediaCache};
 use tokio::sync::{mpsc, Semaphore};
 
 /// How many thumbnail downloads may be in flight at once.
@@ -60,6 +62,13 @@ pub enum Command {
     SignIn { code: String },
     /// Forget the stored token.
     SignOut,
+    /// Fetch an asset's files and record them in the library.
+    Download {
+        /// The record written once the files land.
+        item: LibraryItem,
+        /// Resolution token from the detail panel, e.g. `4K`.
+        quality: Option<String>,
+    },
 }
 
 /// Results the worker hands back.
@@ -90,6 +99,19 @@ pub enum Event {
     SignedIn(Result<Account, String>),
     /// The stored token was cleared.
     SignedOut,
+    /// One progress report from a running download.
+    DownloadPhase {
+        id: String,
+        phase: assetcraft_transfer::Phase,
+    },
+    /// A download finished and was recorded in the library.
+    DownloadDone {
+        id: String,
+        files: usize,
+        bytes: u64,
+    },
+    /// A download failed; `error` is one readable line.
+    DownloadFailed { id: String, error: String },
     /// The worker could not be set up at all; the UI should fall back to demo
     /// data.
     Fatal(String),
@@ -302,6 +324,75 @@ async fn run(
                     client.set_token(None);
                     let _ = store.clear();
                     let _ = events.send(Event::SignedOut);
+                    ctx.request_repaint();
+                });
+            }
+            Command::Download { item, quality } => {
+                let client = client.clone();
+                let events = events.clone();
+                let ctx = ctx.clone();
+                let config = config.clone();
+                let id = item.asset_id.clone();
+                tokio::spawn(async move {
+                    let request = assetcraft_transfer::Request {
+                        asset_id: id.clone(),
+                        output: config.paths.asset_dir(&id),
+                        chunk_base: std::env::var("ASSETCRAFT_CHUNK_BASE").ok(),
+                        criteria: SelectionCriteria {
+                            quality,
+                            ..Default::default()
+                        },
+                        options: Default::default(),
+                    };
+
+                    let progress_events = events.clone();
+                    let progress_id = id.clone();
+                    let progress_ctx = ctx.clone();
+                    let result = assetcraft_transfer::acquire(&client, &request, move |phase| {
+                        let _ = progress_events.send(Event::DownloadPhase {
+                            id: progress_id.clone(),
+                            phase,
+                        });
+                        progress_ctx.request_repaint();
+                    })
+                    .await;
+
+                    match result {
+                        Ok(acquired) => {
+                            let recorded = Library::open(config.paths.library_file())
+                                .map_err(|error| error.to_string())
+                                .and_then(|library| {
+                                    library.insert(&item).map_err(|error| error.to_string())?;
+                                    library
+                                        .record_download(
+                                            &AssetId::new(&id),
+                                            &acquired.path,
+                                            &acquired.format,
+                                        )
+                                        .map_err(|error| error.to_string())
+                                });
+                            let event = match recorded {
+                                Ok(()) => Event::DownloadDone {
+                                    id,
+                                    files: acquired.files,
+                                    bytes: acquired.bytes,
+                                },
+                                Err(error) => Event::DownloadFailed {
+                                    id,
+                                    error: format!(
+                                        "the files arrived but could not be recorded: {error}"
+                                    ),
+                                },
+                            };
+                            let _ = events.send(event);
+                        }
+                        Err(error) => {
+                            let _ = events.send(Event::DownloadFailed {
+                                id,
+                                error: friendly(&format!("{error:#}")),
+                            });
+                        }
+                    }
                     ctx.request_repaint();
                 });
             }

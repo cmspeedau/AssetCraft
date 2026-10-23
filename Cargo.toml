@@ -17,6 +17,7 @@ assetcraft-core = { version = "0.1.0", path = "crates/assetcraft-core" }
 assetcraft-dcc-blender = { version = "0.1.0", path = "crates/assetcraft-dcc-blender" }
 assetcraft-download = { version = "0.1.0", path = "crates/assetcraft-download" }
 assetcraft-library = { version = "0.1.0", path = "crates/assetcraft-library" }
+assetcraft-transfer = { version = "0.1.0", path = "crates/assetcraft-transfer" }
 
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use assetcraft_auth::{ensure_fresh_token, EpicAuth, EpicToken, FileTokenStore, TokenStore};
 use assetcraft_catalog::FabClient;
-use assetcraft_core::{AssetDetail, AssetId, AssetSummary, Config, Page, SearchQuery};
+use assetcraft_core::{AssetDetail, AssetId, AssetSummary, Config, LibraryItem, Page, SearchQuery};
 use assetcraft_library::MediaCache;
 use tokio::sync::{mpsc, Semaphore};
 
@@ -49,6 +49,11 @@ pub enum Command {
     },
     /// Fetch one listing's full detail.
     Detail(AssetId),
+    /// Fetch one page of the signed-in account's owned library.
+    Owned {
+        generation: u64,
+        cursor: Option<String>,
+    },
     /// Download and decode a thumbnail into a texture.
     Thumbnail { id: String, url: String },
     /// Exchange a browser authorization code for a token and store it.
@@ -69,6 +74,11 @@ pub enum Event {
         id: String,
         /// Boxed: a detail is much larger than the other events.
         result: Box<Result<AssetDetail, String>>,
+    },
+    /// One page of the owned library, or why it could not be read.
+    Owned {
+        generation: u64,
+        result: Box<Result<Page<LibraryItem>, String>>,
     },
     Thumbnail {
         id: String,
@@ -183,8 +193,13 @@ async fn run(
         let store = store.clone();
         let events = events.clone();
         let ctx = ctx.clone();
+        let session_client = client.clone();
         tokio::spawn(async move {
-            let account = restore_session(&auth, &store).await;
+            let session = restore_session(&auth, &store).await;
+            if let Some((_, token)) = &session {
+                session_client.set_token(Some(token.authorization_header()));
+            }
+            let account = session.map(|(account, _)| account);
             let _ = events.send(Event::Session(account));
             ctx.request_repaint();
         });
@@ -228,17 +243,50 @@ async fn run(
                     ctx.request_repaint();
                 });
             }
+            Command::Owned { generation, cursor } => {
+                let client = client.clone();
+                let store = store.clone();
+                let events = events.clone();
+                let ctx = ctx.clone();
+                tokio::spawn(async move {
+                    // The library endpoint is keyed by account id, which only
+                    // the stored session carries.
+                    let account_id = store
+                        .load()
+                        .ok()
+                        .flatten()
+                        .and_then(|token| token.account_id);
+                    let result = match account_id {
+                        Some(account_id) => client
+                            .library(&account_id, cursor.as_deref())
+                            .await
+                            .map_err(|error| friendly(&error.to_string())),
+                        None => {
+                            Err("Sign in again: the stored session has no account id.".to_owned())
+                        }
+                    };
+                    let _ = events.send(Event::Owned {
+                        generation,
+                        result: Box::new(result),
+                    });
+                    ctx.request_repaint();
+                });
+            }
             Command::SignIn { code } => {
                 let auth = auth.clone();
                 let store = store.clone();
                 let events = events.clone();
                 let ctx = ctx.clone();
+                let client = client.clone();
                 tokio::spawn(async move {
                     let result = match auth.exchange_code(code.trim()).await {
-                        Ok(token) => match store.save(&token) {
-                            Ok(()) => Ok(Account::from_token(&token)),
-                            Err(error) => Err(friendly(&error.to_string())),
-                        },
+                        Ok(token) => {
+                            client.set_token(Some(token.authorization_header()));
+                            match store.save(&token) {
+                                Ok(()) => Ok(Account::from_token(&token)),
+                                Err(error) => Err(friendly(&error.to_string())),
+                            }
+                        }
                         Err(error) => Err(friendly(&error.to_string())),
                     };
                     let _ = events.send(Event::SignedIn(result));
@@ -249,7 +297,9 @@ async fn run(
                 let store = store.clone();
                 let events = events.clone();
                 let ctx = ctx.clone();
+                let client = client.clone();
                 tokio::spawn(async move {
+                    client.set_token(None);
                     let _ = store.clear();
                     let _ = events.send(Event::SignedOut);
                     ctx.request_repaint();
@@ -286,11 +336,11 @@ async fn run(
 /// A refresh that fails (offline, expired refresh token) still reports the
 /// stored account: the UI should show who is signed in and let the next
 /// authenticated call surface the problem.
-async fn restore_session(auth: &EpicAuth, store: &FileTokenStore) -> Option<Account> {
+async fn restore_session(auth: &EpicAuth, store: &FileTokenStore) -> Option<(Account, EpicToken)> {
     let stored = store.load().ok().flatten()?;
     match ensure_fresh_token(auth, store).await {
-        Ok(token) => Some(Account::from_token(&token)),
-        Err(_) => Some(Account::from_token(&stored)),
+        Ok(token) => Some((Account::from_token(&token), token)),
+        Err(_) => Some((Account::from_token(&stored), stored)),
     }
 }
 

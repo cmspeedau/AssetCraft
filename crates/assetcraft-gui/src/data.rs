@@ -163,11 +163,6 @@ impl View {
             View::Local => "Local",
         }
     }
-
-    /// Whether the view needs an Epic account, and so cannot be filled yet.
-    pub fn needs_account(self) -> bool {
-        matches!(self, View::Collections | View::Purchased)
-    }
 }
 
 /// The filter bar's state. `None` means "all types".

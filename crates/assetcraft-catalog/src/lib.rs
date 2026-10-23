@@ -43,7 +43,7 @@ pub use cache::{ResponseCache, DEFAULT_TTL};
 pub struct FabClient {
     http: reqwest::Client,
     base: Url,
-    token: Option<String>,
+    token: Arc<std::sync::RwLock<Option<String>>>,
     cache: Option<ResponseCache>,
     session_ready: Arc<AtomicBool>,
 }
@@ -57,7 +57,7 @@ impl FabClient {
         Ok(Self {
             http,
             base,
-            token: None,
+            token: Arc::new(std::sync::RwLock::new(None)),
             cache: None,
             session_ready: Arc::new(AtomicBool::new(false)),
         })
@@ -79,9 +79,20 @@ impl FabClient {
     /// Attach an `Authorization` header value (see
     /// [`assetcraft_auth::EpicToken::authorization_header`]) for authenticated
     /// calls.
-    pub fn with_token(mut self, authorization_header: impl Into<String>) -> Self {
-        self.token = Some(authorization_header.into());
+    pub fn with_token(self, authorization_header: impl Into<String>) -> Self {
+        self.set_token(Some(authorization_header.into()));
         self
+    }
+
+    /// Replace (or clear) the token used for authenticated calls.
+    ///
+    /// Session state changes while an app is running — sign-in, refresh,
+    /// sign-out — so the client cannot own a fixed token.
+    pub fn set_token(&self, authorization_header: Option<String>) {
+        *self
+            .token
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = authorization_header;
     }
 
     /// Serve public GET requests from `cache` when possible.
@@ -273,12 +284,16 @@ impl FabClient {
     }
 
     /// The bearer header value, or an error explaining how to get one.
-    fn authorization(&self) -> Result<&str> {
-        self.token.as_deref().ok_or_else(|| {
-            Error::NotAuthenticated(
-                "this request needs an access token; run `assetcraft login` first".to_string(),
-            )
-        })
+    fn authorization(&self) -> Result<String> {
+        self.token
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .ok_or_else(|| {
+                Error::NotAuthenticated(
+                    "this request needs an access token; run `assetcraft login` first".to_string(),
+                )
+            })
     }
 
     /// Establish the Fab session (CSRF cookie) if it has not been established.
@@ -701,6 +716,29 @@ mod tests {
             matches!(err, Error::HttpStatus { status: 404, .. }),
             "got {err:?}"
         );
+    }
+
+    #[test]
+    fn the_token_can_be_replaced_at_runtime() {
+        let client = FabClient::new("https://example.test", reqwest::Client::new()).unwrap();
+        assert!(matches!(
+            client.authorization(),
+            Err(Error::NotAuthenticated(_))
+        ));
+
+        client.set_token(Some("bearer one".to_owned()));
+        assert_eq!(client.authorization().unwrap(), "bearer one");
+
+        // Clones share the token, so a session change reaches every request.
+        let clone = client.clone();
+        clone.set_token(Some("bearer two".to_owned()));
+        assert_eq!(client.authorization().unwrap(), "bearer two");
+
+        client.set_token(None);
+        assert!(matches!(
+            client.authorization(),
+            Err(Error::NotAuthenticated(_))
+        ));
     }
 
     #[tokio::test]

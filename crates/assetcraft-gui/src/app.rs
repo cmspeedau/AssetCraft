@@ -70,6 +70,9 @@ pub struct App {
     library: Option<Library>,
     local_cards: Vec<Card>,
     library_error: Option<String>,
+    owned_cards: Vec<Card>,
+    owned_cursor: Option<String>,
+    owned_loaded: bool,
 }
 
 impl Default for App {
@@ -107,6 +110,9 @@ impl Default for App {
             library: None,
             local_cards: Vec::new(),
             library_error: None,
+            owned_cards: Vec::new(),
+            owned_cursor: None,
+            owned_loaded: false,
         }
     }
 }
@@ -196,6 +202,20 @@ impl App {
             self.selected = None;
             return;
         }
+        if self.view == View::Purchased {
+            self.loading = false;
+            self.cards.clear();
+            self.selected = None;
+            if self.source == Source::Live && self.account.is_some() {
+                if self.owned_loaded {
+                    self.cards = self.owned_cards.clone();
+                } else {
+                    self.loading = true;
+                    self.request_owned(None);
+                }
+            }
+            return;
+        }
         if self.source == Source::Demo {
             self.loading = false;
             self.cards = data::demo_cards();
@@ -224,11 +244,39 @@ impl App {
         });
     }
 
+    /// Ask the worker for one page of the owned library.
+    fn request_owned(&mut self, cursor: Option<String>) {
+        let Some(worker) = &self.worker else {
+            self.error = Some("The catalog worker is not running.".to_owned());
+            self.loading = false;
+            return;
+        };
+        worker.send(Command::Owned {
+            generation: self.generation,
+            cursor,
+        });
+    }
+
     pub fn can_load_more(&self) -> bool {
+        if self.view == View::Purchased {
+            return self.source == Source::Live
+                && self.account.is_some()
+                && self.owned_cursor.is_some()
+                && !self.loading;
+        }
         self.source == Source::Live && self.next_cursor.is_some() && !self.loading
     }
 
     pub fn load_more(&mut self, ctx: &egui::Context) {
+        if self.view == View::Purchased {
+            let Some(cursor) = self.owned_cursor.take() else {
+                return;
+            };
+            self.loading = true;
+            self.request_owned(Some(cursor));
+            ctx.request_repaint();
+            return;
+        }
         let Some(cursor) = self.next_cursor.take() else {
             return;
         };
@@ -282,11 +330,35 @@ impl App {
                         self.error = Some(error);
                     }
                 },
+                Event::Owned { generation, result } => {
+                    if generation != self.generation {
+                        continue; // a newer search superseded this one
+                    }
+                    self.loading = false;
+                    match *result {
+                        Ok(page) => {
+                            self.owned_cards
+                                .extend(page.items.iter().map(Card::from_library_item));
+                            self.cards = self.owned_cards.clone();
+                            self.owned_cursor = page.next_cursor;
+                            self.owned_loaded = true;
+                            self.error = None;
+                        }
+                        Err(error) => {
+                            self.error = Some(error);
+                        }
+                    }
+                }
                 Event::Thumbnail { id, texture } => {
                     self.textures.insert(id, texture);
                 }
                 Event::Session(account) => {
                     self.account = account;
+                    // The view may have opened before the session landed.
+                    if self.account.is_some() && self.view == View::Purchased && !self.owned_loaded
+                    {
+                        self.start_search(ctx);
+                    }
                 }
                 Event::SignedIn(result) => {
                     self.sign_in_busy = false;
@@ -296,12 +368,21 @@ impl App {
                             self.sign_in_open = false;
                             self.sign_in_code.clear();
                             self.sign_in_error = None;
+                            if self.view == View::Purchased {
+                                self.start_search(ctx);
+                            }
                         }
                         Err(error) => self.sign_in_error = Some(error),
                     }
                 }
                 Event::SignedOut => {
                     self.account = None;
+                    self.owned_cards.clear();
+                    self.owned_cursor = None;
+                    self.owned_loaded = false;
+                    if self.view == View::Purchased {
+                        self.start_search(ctx);
+                    }
                 }
                 Event::Fatal(error) => {
                     self.error = Some(error);
@@ -320,13 +401,17 @@ impl App {
         self.textures.clear();
         self.requested.clear();
         self.details.clear();
+        self.owned_cards.clear();
+        self.owned_cursor = None;
+        self.owned_loaded = false;
         self.start_search(ctx);
     }
 
     fn hits(&self) -> Vec<usize> {
         let mut hits = data::visible(&self.cards, self.view, &self.favorites, &self.local);
-        if self.source == Source::Demo {
-            // Demo data is filtered locally; live data is filtered by the API.
+        if self.source == Source::Demo || self.view == View::Purchased {
+            // Demo data and the owned library are filtered locally; catalog
+            // search results are filtered by the API.
             let needle = self.query.trim().to_lowercase();
             let slug = self.filters.listing_slug();
             hits.retain(|&i| {
@@ -352,6 +437,9 @@ impl App {
                     }
                     View::Favorites => Some(self.favorites.len()),
                     View::Local => Some(self.local_cards.len()),
+                    View::Purchased if self.source == Source::Live => {
+                        self.account.as_ref().map(|_| self.owned_cards.len())
+                    }
                     _ => None,
                 };
                 (view, count)
@@ -388,7 +476,7 @@ impl App {
     pub fn select(&mut self, i: usize) {
         self.selected = Some(i);
         // Local items have no marketplace listing to fetch.
-        if self.source != Source::Live || self.view == View::Local {
+        if self.source != Source::Live || matches!(self.view, View::Local | View::Purchased) {
             return;
         }
         let Some(card) = self.cards.get(i) else {
@@ -809,6 +897,7 @@ impl App {
         let favorite = self.favorites.contains(&id);
         let live = self.source == Source::Live;
         let local_view = self.view == View::Local;
+        let owned_view = self.view == View::Purchased;
         let on_disk = if local_view {
             self.library
                 .as_ref()
@@ -873,6 +962,8 @@ impl App {
                             let mut line = seller.unwrap_or_else(|| {
                                 if local_view {
                                     "Local copy"
+                                } else if owned_view {
+                                    "Owned"
                                 } else {
                                     "Unknown seller"
                                 }
@@ -1129,11 +1220,13 @@ impl eframe::App for App {
                     return;
                 }
 
-                if self.view.needs_account() && self.source == Source::Live {
-                    let what = match self.view {
-                        View::Local => "the local library",
-                        _ => self.view.label(),
-                    };
+                // Collections are not wired yet; the owned library needs a
+                // session to ask for.
+                let gated = self.source == Source::Live
+                    && (self.view == View::Collections
+                        || (self.view == View::Purchased && self.account.is_none()));
+                if gated {
+                    let what = self.view.label();
                     let signed_in = self.account.is_some();
                     let mut open_sign_in = false;
                     ui.centered_and_justified(|ui| {
@@ -1149,11 +1242,11 @@ impl eframe::App for App {
                             );
                             ui.label(
                                 egui::RichText::new(if signed_in {
-                                    "AssetCraft will list what you own here once the owned-library \
-                                     client is wired."
+                                    "AssetCraft will list your collections here once the \
+                                     collections client is wired."
                                 } else {
-                                    "Sign in to Epic to reach your Fab library. Until then, demo data \
-                                     shows what the shell can do."
+                                    "Sign in to Epic to see the assets you own on Fab. Until then, \
+                                     demo data shows what the shell can do."
                                 })
                                 .size(12.0)
                                 .color(theme::FG_MUTED),
@@ -1180,6 +1273,7 @@ impl eframe::App for App {
                 if hits.is_empty() {
                     let text = match self.view {
                         View::Local => "Nothing downloaded yet. Assets you acquire land here.",
+                        View::Purchased => "Your Epic library is empty.",
                         _ if self.cards.is_empty() => "The catalog returned no listings.",
                         _ => "Nothing matches this view, search, and filters.",
                     };

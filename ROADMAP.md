@@ -208,7 +208,8 @@ Make it a product.
 - [ ] Download queue wired to the download engine.
 - [x] Local library view: assets on disk, read from the library database, with
       their paths in the detail panel.
-- [ ] Owned/purchased library views and settings.
+- [x] Owned library view: the signed-in account's Fab library, paged.
+- [ ] Collections view and settings.
 - [x] Login and account status inside the app (Epic launcher flow, token shared
       with the CLI).
 - [ ] Installers/artifacts for Windows (`.msi`/`.zip`), macOS (`.dmg`), Linux

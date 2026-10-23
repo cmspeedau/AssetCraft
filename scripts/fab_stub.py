@@ -127,6 +127,25 @@ def summary(listing):
     }
 
 
+#: Assets the stub account "owns", with paging across two pages.
+OWNED = [LISTINGS[n] for n in (0, 3, 7, 12, 15)]
+
+
+def owned_item(listing):
+    n = listing["n"]
+    return {
+        "assetId": listing["uid"],
+        "assetNamespace": "fab",
+        "title": listing["title"],
+        "description": f"{listing['title']} - owned in the stub account.",
+        "url": f"https://www.fab.com/listings/{listing['uid']}",
+        "source": "fab",
+        "distributionMethod": "download",
+        "categories": [{"name": TYPE_LABELS.get(listing["listingType"], "Asset")}],
+        "images": [{"url": f"{BASE}/img/{n}.png", "type": "thumbnail"}],
+    }
+
+
 def detail(listing):
     body = summary(listing)
     body.update(
@@ -188,6 +207,28 @@ class Handler(BaseHTTPRequestHandler):
                 "results": [summary(item) for item in items],
                 "count": len(LISTINGS),
                 "cursors": {"next": next_cursor, "previous": None},
+            }
+            self.reply_json(body)
+            return
+
+        # The authenticated endpoints start with a CSRF handshake.
+        if url.path == "/i/csrf":
+            self.reply_json({"ok": True})
+            return
+
+        match = re.fullmatch(r"/e/accounts/[\w-]+/ue/library", url.path)
+        if match:
+            query = parse_qs(url.query)
+            cursor = query.get("cursor", [None])[0]
+            if cursor:
+                items = OWNED[3:]
+                next_cursor = None
+            else:
+                items = OWNED[:3]
+                next_cursor = "lib-2"
+            body = {
+                "results": [owned_item(item) for item in items],
+                "cursors": {"next": next_cursor},
             }
             self.reply_json(body)
             return

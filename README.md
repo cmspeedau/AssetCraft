@@ -103,10 +103,11 @@ headless CLI.
 | `assetcraft-auth` | lib | Epic/Fab OAuth device flow and secure token storage (OS keyring). |
 | `assetcraft-catalog` | lib | Fab API client: search, filters, metadata, and response cache. |
 | `assetcraft-download` | lib | Concurrent, resumable download engine with integrity checks, manifest and chunk parsing, and reassembly. |
+| `assetcraft-transfer` | lib | Resolves an owned asset and brings it down: formats → signed download info → manifest → chunks → verified files. |
 | `assetcraft-library` | lib | Local SQLite library index, thumbnails, dedup, offline browse. |
 | `assetcraft-dcc-blender` | adapter | Blender exporter and Python addon bridge. |
 | `assetcraft-cli` | bin | Headless binary for scripted / CI workflows. |
-| `assetcraft-gui` | bin | egui desktop app: browse, search, filter, and open asset details. |
+| `assetcraft-gui` | bin | egui desktop app: browse, search, filter, download, and browse the local library. |
 
 Dependency direction is one-way: binaries depend on the service and core crates,
 never the reverse. DCC adapters implement a shared export trait defined in
@@ -271,6 +272,7 @@ assetcraft/
 │   ├── assetcraft-auth/        # Fab OAuth + token storage
 │   ├── assetcraft-catalog/     # Fab API client + metadata cache
 │   ├── assetcraft-download/    # download engine
+│   ├── assetcraft-transfer/    # resolve + download + assemble one asset
 │   ├── assetcraft-library/     # local library index
 │   ├── assetcraft-dcc-blender/ # Blender exporter
 │   ├── assetcraft-cli/         # headless binary

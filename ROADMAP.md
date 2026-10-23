@@ -205,7 +205,8 @@ Make it a product.
 
 - [x] egui desktop shell: browse, search, filter, asset detail, driven by the
       live catalog client (with an offline demo catalog).
-- [ ] Download queue wired to the download engine.
+- [x] Download queue wired to the download engine: resolve, fetch, reassemble,
+      verify, and record in the library, with phase progress in the app.
 - [x] Local library view: assets on disk, read from the library database, with
       their paths in the detail panel.
 - [x] Owned library view: the signed-in account's Fab library, paged.

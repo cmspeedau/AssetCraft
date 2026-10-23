@@ -4,7 +4,7 @@
 //! from the demo dataset used when the API is unreachable. Keeping one shape
 //! for both means the UI never branches on the source.
 
-use assetcraft_core::{AssetSummary, SearchQuery};
+use assetcraft_core::{AssetSummary, LibraryItem, SearchQuery};
 
 /// How many listings a search page asks for.
 pub const PAGE_SIZE: u32 = 60;
@@ -24,10 +24,12 @@ pub struct Card {
     pub hue: f32,
     /// Whether the listing appeared recently enough for a NEW pill.
     pub is_new: bool,
+    /// Description carried by the record itself, when it has one.
+    pub description: Option<String>,
 }
 
 impl Card {
-    /// Project a marketplace summary into the grid's card.
+    /// Project a locally held asset into the grid's card.
     pub fn from_summary(summary: &AssetSummary) -> Self {
         Self {
             id: summary.id.as_str().to_owned(),
@@ -40,6 +42,35 @@ impl Card {
             thumbnail: summary.thumbnail_url.clone(),
             hue: hue_for(summary.id.as_str()),
             is_new: is_recent(summary.published_at.as_deref()),
+            description: None,
+        }
+    }
+
+    /// Project a library record into the same card the catalog uses.
+    ///
+    /// Library items carry no seller, rating, or price, so those stay empty;
+    /// the category stands in for the listing type.
+    pub fn from_library_item(item: &LibraryItem) -> Self {
+        let listing_type = item
+            .categories
+            .first()
+            .and_then(|category| category.name.clone().or_else(|| category.slug.clone()));
+        Self {
+            id: item.asset_id.clone(),
+            title: item.title.clone(),
+            seller: None,
+            listing_type,
+            free: false,
+            rating: None,
+            tags: item
+                .categories
+                .iter()
+                .filter_map(|category| category.name.clone())
+                .collect(),
+            thumbnail: item.thumbnail_url().map(str::to_owned),
+            hue: hue_for(&item.asset_id),
+            is_new: false,
+            description: item.description.clone(),
         }
     }
 }
@@ -135,7 +166,7 @@ impl View {
 
     /// Whether the view needs an Epic account, and so cannot be filled yet.
     pub fn needs_account(self) -> bool {
-        matches!(self, View::Collections | View::Purchased | View::Local)
+        matches!(self, View::Collections | View::Purchased)
     }
 }
 
@@ -404,6 +435,7 @@ pub fn demo_cards() -> Vec<Card> {
                 thumbnail: None,
                 hue: hue_for(title),
                 is_new: n % 5 < 2,
+                description: None,
             },
         )
         .collect()
@@ -440,6 +472,40 @@ mod tests {
         assert_eq!(first, hue_for("abc-123"));
         assert_ne!(first, hue_for("abc-124"));
         assert!((0.0..360.0).contains(&first));
+    }
+
+    #[test]
+    fn library_items_map_their_categories_and_images() {
+        use assetcraft_core::{AssetImage, Category};
+
+        let item = LibraryItem {
+            asset_id: "fab-1".to_owned(),
+            namespace: "fab".to_owned(),
+            title: "Mossy Rock".to_owned(),
+            description: Some("A mossy rock.".to_owned()),
+            url: None,
+            source: Some("fab".to_owned()),
+            distribution_method: None,
+            categories: vec![Category {
+                name: Some("3D Models".to_owned()),
+                ..Default::default()
+            }],
+            images: vec![AssetImage {
+                url: Some("http://example.test/1.png".to_owned()),
+                kind: Some("thumbnail".to_owned()),
+                ..Default::default()
+            }],
+        };
+
+        let card = Card::from_library_item(&item);
+        assert_eq!(card.id, "fab-1");
+        assert_eq!(card.title, "Mossy Rock");
+        assert_eq!(card.listing_type.as_deref(), Some("3D Models"));
+        assert_eq!(card.thumbnail.as_deref(), Some("http://example.test/1.png"));
+        assert_eq!(card.description.as_deref(), Some("A mossy rock."));
+        assert_eq!(card.tags, vec!["3D Models".to_owned()]);
+        assert!(card.seller.is_none());
+        assert!(!card.free);
     }
 
     #[test]

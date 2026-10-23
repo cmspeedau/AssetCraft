@@ -9,6 +9,7 @@
 use std::collections::{HashMap, HashSet};
 
 use assetcraft_core::{AssetId, Config};
+use assetcraft_library::Library;
 
 use crate::data::{self, Card, Filters, View};
 use crate::worker::{Account, CatalogWorker, Command, Event};
@@ -66,6 +67,9 @@ pub struct App {
     sign_in_busy: bool,
     sign_in_error: Option<String>,
     sign_in_url: String,
+    library: Option<Library>,
+    local_cards: Vec<Card>,
+    library_error: Option<String>,
 }
 
 impl Default for App {
@@ -100,6 +104,9 @@ impl Default for App {
             sign_in_busy: false,
             sign_in_error: None,
             sign_in_url: String::new(),
+            library: None,
+            local_cards: Vec::new(),
+            library_error: None,
         }
     }
 }
@@ -125,6 +132,14 @@ impl App {
                 app.sign_in_url = assetcraft_auth::EpicAuth::from_config(&config)
                     .map(|auth| auth.authorization_url())
                     .unwrap_or_default();
+                match Library::open(config.paths.library_file()) {
+                    Ok(library) => {
+                        app.library = Some(library);
+                        app.reload_local();
+                    }
+                    Err(error) => app.library_error = Some(error.to_string()),
+                }
+
                 app.worker = CatalogWorker::spawn(cc.egui_ctx.clone(), config);
                 if app.worker.is_none() {
                     app.source = Source::Demo;
@@ -149,12 +164,38 @@ impl App {
 
     // ----- data flow -------------------------------------------------------
 
+    /// Read the local library into cards and remember which assets are held.
+    fn reload_local(&mut self) {
+        let Some(library) = &self.library else {
+            self.local_cards.clear();
+            return;
+        };
+        match local_cards(library) {
+            Ok(cards) => {
+                self.local = cards.iter().map(|card| card.id.clone()).collect();
+                self.local_cards = cards;
+                self.library_error = None;
+            }
+            Err(error) => {
+                self.local_cards.clear();
+                self.library_error = Some(error.to_string());
+            }
+        }
+    }
+
     /// Kick off a fresh search for the current query and filters.
     fn start_search(&mut self, ctx: &egui::Context) {
         self.generation += 1;
         self.error = None;
         self.next_cursor = None;
         self.total = None;
+        if self.view == View::Local {
+            self.loading = false;
+            self.reload_local();
+            self.cards = self.local_cards.clone();
+            self.selected = None;
+            return;
+        }
         if self.source == Source::Demo {
             self.loading = false;
             self.cards = data::demo_cards();
@@ -310,7 +351,7 @@ impl App {
                         Some(self.cards.iter().filter(|card| card.free).count())
                     }
                     View::Favorites => Some(self.favorites.len()),
-                    View::Local => Some(self.local.len()),
+                    View::Local => Some(self.local_cards.len()),
                     _ => None,
                 };
                 (view, count)
@@ -346,7 +387,8 @@ impl App {
 
     pub fn select(&mut self, i: usize) {
         self.selected = Some(i);
-        if self.source != Source::Live {
+        // Local items have no marketplace listing to fetch.
+        if self.source != Source::Live || self.view == View::Local {
             return;
         }
         let Some(card) = self.cards.get(i) else {
@@ -740,7 +782,7 @@ impl App {
     }
 
     fn detail(&mut self, ui: &mut egui::Ui, i: usize) {
-        let (id, title, seller, rating, listing_type, hue, tags, is_new) = {
+        let (id, title, seller, rating, listing_type, hue, tags, is_new, card_description) = {
             let card = &self.cards[i];
             (
                 card.id.clone(),
@@ -751,19 +793,30 @@ impl App {
                 card.hue,
                 card.tags.clone(),
                 card.is_new,
+                card.description.clone(),
             )
         };
         self.ensure_thumbnail(i);
         let description = self
             .details
             .get(&id)
-            .and_then(|detail| detail.description.clone());
+            .and_then(|detail| detail.description.clone())
+            .or(card_description);
         let published = self
             .details
             .get(&id)
             .and_then(|detail| detail.created_at.clone());
         let favorite = self.favorites.contains(&id);
         let live = self.source == Source::Live;
+        let local_view = self.view == View::Local;
+        let on_disk = if local_view {
+            self.library
+                .as_ref()
+                .and_then(|library| library.download(&AssetId::new(id.clone())).ok().flatten())
+                .map(|download| download.path.display().to_string())
+        } else {
+            None
+        };
         let demo_note = "Offline demo listing: the marketplace catalog is not \
                          connected in demo mode.";
 
@@ -817,22 +870,29 @@ impl App {
                                     chip(ui, "NEW");
                                 }
                             });
-                            let mut line = seller.unwrap_or_else(|| "Unknown seller".to_owned());
+                            let mut line = seller.unwrap_or_else(|| {
+                                if local_view {
+                                    "Local copy"
+                                } else {
+                                    "Unknown seller"
+                                }
+                                .to_owned()
+                            });
                             if let Some(rating) = rating {
                                 line.push_str(&format!("  \u{00b7}  Rating {rating:.1}"));
                             }
                             ui.label(egui::RichText::new(line).size(12.0));
 
                             ui.add_space(4.0);
-                            for (key, value) in [
-                                ("Type", data::listing_label(listing_type.as_deref())),
-                                (
-                                    "Published",
-                                    published
-                                        .map(|raw| short_date(&raw))
-                                        .unwrap_or_else(|| "\u{2014}".to_owned()),
-                                ),
-                            ] {
+                            let mut rows =
+                                vec![("Type", data::listing_label(listing_type.as_deref()))];
+                            if let Some(published) = &published {
+                                rows.push(("Published", short_date(published)));
+                            }
+                            if let Some(path) = &on_disk {
+                                rows.push(("On disk", path.clone()));
+                            }
+                            for (key, value) in rows {
                                 ui.horizontal(|ui| {
                                     ui.label(
                                         egui::RichText::new(key).size(11.0).color(theme::FG_MUTED),
@@ -840,11 +900,14 @@ impl App {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            ui.label(
-                                                egui::RichText::new(value)
+                                            let response = ui.label(
+                                                egui::RichText::new(grid::ellipsize(&value, 46))
                                                     .size(12.0)
                                                     .color(theme::FG_SECONDARY),
                                             );
+                                            if key == "On disk" {
+                                                response.on_hover_text(&value);
+                                            }
                                         },
                                     );
                                 });
@@ -866,7 +929,11 @@ impl App {
                                     );
                                 });
                             } else {
-                                let body = description.as_deref().unwrap_or(demo_note);
+                                let body = description.as_deref().unwrap_or(if local_view {
+                                    "No description was recorded for this asset."
+                                } else {
+                                    demo_note
+                                });
                                 ui.label(
                                     egui::RichText::new(strip_tags(body).trim())
                                         .size(12.0)
@@ -888,7 +955,7 @@ impl App {
                                 });
                             }
 
-                            if live {
+                            if live && !local_view {
                                 ui.add_space(8.0);
                                 ui.hyperlink_to(
                                     "Open on fab.com",
@@ -900,8 +967,9 @@ impl App {
             );
 
             ui.separator();
+            let can_download = !live && !local_view;
             ui.horizontal(|ui| {
-                if !live {
+                if can_download {
                     egui::ComboBox::from_id_salt("resolution")
                         .width(112.0)
                         .selected_text(RESOLUTIONS[self.resolution])
@@ -916,15 +984,17 @@ impl App {
                         .strong()
                         .color(egui::Color32::WHITE),
                 )
-                .min_size(egui::vec2(if live { 132.0 } else { 0.0 }, 30.0))
-                .fill(if live {
-                    theme::GREEN.gamma_multiply(0.35)
-                } else {
+                .min_size(egui::vec2(if can_download { 0.0 } else { 132.0 }, 30.0))
+                .fill(if can_download {
                     theme::GREEN
+                } else {
+                    theme::GREEN.gamma_multiply(0.35)
                 });
-                let response = ui.add_enabled(!live, button);
-                if live {
-                    response.on_disabled_hover_text(if self.account.is_some() {
+                let response = ui.add_enabled(can_download, button);
+                if !can_download {
+                    response.on_disabled_hover_text(if local_view {
+                        "Already in your local library"
+                    } else if self.account.is_some() {
                         "Downloads arrive with the library milestone"
                     } else {
                         "Sign in to Epic to download assets"
@@ -1108,15 +1178,23 @@ impl eframe::App for App {
                 }
 
                 if hits.is_empty() {
+                    let text = match self.view {
+                        View::Local => "Nothing downloaded yet. Assets you acquire land here.",
+                        _ if self.cards.is_empty() => "The catalog returned no listings.",
+                        _ => "Nothing matches this view, search, and filters.",
+                    };
+                    let library_error = self.library_error.clone();
                     ui.centered_and_justified(|ui| {
-                        ui.label(
-                            egui::RichText::new(if self.cards.is_empty() {
-                                "The catalog returned no listings."
-                            } else {
-                                "Nothing matches this view, search, and filters."
-                            })
-                            .color(theme::FG_MUTED),
-                        );
+                        ui.vertical(|ui| {
+                            ui.label(egui::RichText::new(text).color(theme::FG_MUTED));
+                            if let Some(error) = &library_error {
+                                ui.label(
+                                    egui::RichText::new(error)
+                                        .size(11.0)
+                                        .color(egui::Color32::from_rgb(226, 128, 128)),
+                                );
+                            }
+                        });
                     });
                     return;
                 }
@@ -1242,6 +1320,17 @@ fn dropdown<T: Copy + PartialEq>(
     );
 }
 
+/// The Local view's cards: every asset the library holds, by title.
+fn local_cards(library: &Library) -> assetcraft_core::Result<Vec<Card>> {
+    let mut cards: Vec<Card> = library
+        .list_all()?
+        .iter()
+        .map(Card::from_library_item)
+        .collect();
+    cards.sort_by_key(|card| card.title.to_lowercase());
+    Ok(cards)
+}
+
 /// `2026-02-14T09:30:00.000Z` -> `2026-02-14`, leaving anything unexpected alone.
 fn short_date(raw: &str) -> String {
     match raw.split_once('T') {
@@ -1276,7 +1365,28 @@ fn strip_tags(html: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{short_date, strip_tags};
+    use super::{local_cards, short_date, strip_tags};
+    use assetcraft_core::LibraryItem;
+    use assetcraft_library::Library;
+
+    #[test]
+    fn the_local_view_lists_library_items_by_title() {
+        let library = Library::open_in_memory().unwrap();
+        for (id, title) in [("b", "Beta Asset"), ("a", "Alpha Asset")] {
+            library
+                .insert(&LibraryItem {
+                    asset_id: id.to_owned(),
+                    title: title.to_owned(),
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+
+        let cards = local_cards(&library).unwrap();
+        let titles: Vec<&str> = cards.iter().map(|card| card.title.as_str()).collect();
+        assert_eq!(titles, ["Alpha Asset", "Beta Asset"]);
+        assert_eq!(cards[0].id, "a");
+    }
 
     #[test]
     fn timestamps_are_shown_as_dates() {

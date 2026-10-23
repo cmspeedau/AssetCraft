@@ -206,7 +206,9 @@ Make it a product.
 - [x] egui desktop shell: browse, search, filter, asset detail, driven by the
       live catalog client (with an offline demo catalog).
 - [ ] Download queue wired to the download engine.
-- [ ] Owned library view and settings.
+- [x] Local library view: assets on disk, read from the library database, with
+      their paths in the detail panel.
+- [ ] Owned/purchased library views and settings.
 - [x] Login and account status inside the app (Epic launcher flow, token shared
       with the CLI).
 - [ ] Installers/artifacts for Windows (`.msi`/`.zip`), macOS (`.dmg`), Linux

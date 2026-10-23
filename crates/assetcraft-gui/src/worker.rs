@@ -11,6 +11,7 @@ use std::time::Duration;
 use assetcraft_auth::{ensure_fresh_token, EpicAuth, EpicToken, FileTokenStore, TokenStore};
 use assetcraft_catalog::FabClient;
 use assetcraft_core::{AssetDetail, AssetId, AssetSummary, Config, Page, SearchQuery};
+use assetcraft_library::MediaCache;
 use tokio::sync::{mpsc, Semaphore};
 
 /// How many thumbnail downloads may be in flight at once.
@@ -172,6 +173,9 @@ async fn run(
         }
     };
     let store = FileTokenStore::new(config.paths.token_file());
+    // Thumbnails the download flow already cached are reused, so local library
+    // cards render without a network.
+    let media = MediaCache::new(config.paths.thumbnail_cache_dir());
 
     // Tell the UI who is signed in, refreshing a token that is close to expiry.
     {
@@ -256,11 +260,12 @@ async fn run(
                 let permits = Arc::clone(&permits);
                 let events = events.clone();
                 let ctx = ctx.clone();
+                let media = media.clone();
                 tokio::spawn(async move {
                     let Ok(_permit) = permits.acquire_owned().await else {
                         return;
                     };
-                    let Some(image) = download_thumbnail(&http, &url).await else {
+                    let Some(image) = download_thumbnail(&http, &media, &url).await else {
                         return;
                     };
                     let texture = ctx.load_texture(
@@ -316,7 +321,24 @@ fn friendly(message: &str) -> String {
 }
 
 /// Fetch, downscale, and decode a thumbnail into an egui image.
-async fn download_thumbnail(http: &reqwest::Client, url: &str) -> Option<egui::ColorImage> {
+///
+/// The media cache is consulted first and filled on the way back, so images
+/// the download flow stored are reused and restarts are instant.
+async fn download_thumbnail(
+    http: &reqwest::Client,
+    media: &MediaCache,
+    url: &str,
+) -> Option<egui::ColorImage> {
+    if let Ok(Some(bytes)) = media.get(url) {
+        if let Some(image) = tokio::task::spawn_blocking(move || decode(&bytes))
+            .await
+            .ok()
+            .flatten()
+        {
+            return Some(image);
+        }
+    }
+
     let response = http.get(url).send().await.ok()?.error_for_status().ok()?;
     if response
         .content_length()
@@ -328,6 +350,7 @@ async fn download_thumbnail(http: &reqwest::Client, url: &str) -> Option<egui::C
     if bytes.len() > MAX_THUMBNAIL_BYTES {
         return None;
     }
+    let _ = media.put(url, &bytes);
     // Decoding is CPU work; keep it off the runtime's async workers.
     tokio::task::spawn_blocking(move || decode(&bytes))
         .await

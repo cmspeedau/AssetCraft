@@ -15,6 +15,7 @@ path = "src/main.rs"
 assetcraft-auth.workspace = true
 assetcraft-catalog.workspace = true
 assetcraft-core.workspace = true
+assetcraft-library.workspace = true
 chrono.workspace = true
 eframe = "0.33"
 egui = "0.33"

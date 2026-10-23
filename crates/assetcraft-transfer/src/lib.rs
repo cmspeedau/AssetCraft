@@ -11,7 +11,7 @@
 //! the directory of the manifest URL is assumed, which is what the stub and the
 //! documented layout use.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -281,10 +281,15 @@ fn base_from_manifest_url(manifest_url: &str) -> String {
 /// Join a manifest path onto the output root, refusing anything that escapes.
 fn safe_join(root: &Path, name: &str) -> Result<PathBuf> {
     let relative = Path::new(name);
+    // `is_absolute` is not enough on Windows, where `/etc/passwd` is rooted but
+    // not absolute; RootDir and Prefix cover every rooted form on both.
     let escapes = relative.is_absolute()
-        || relative
-            .components()
-            .any(|part| matches!(part, std::path::Component::ParentDir));
+        || relative.components().any(|part| {
+            matches!(
+                part,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        });
     if escapes {
         bail!("the manifest lists a path outside the output directory: {name:?}");
     }
@@ -391,5 +396,7 @@ mod tests {
         );
         assert!(safe_join(root, "../outside.uasset").is_err());
         assert!(safe_join(root, "/etc/passwd").is_err());
+        #[cfg(windows)]
+        assert!(safe_join(root, "C:\\Windows\\System32\\drivers\\etc\\hosts").is_err());
     }
 }

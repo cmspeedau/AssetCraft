@@ -11,11 +11,11 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use assetcraft_auth::{ensure_fresh_token, EpicAuth, FileTokenStore, TokenStore};
 use assetcraft_catalog::{FabClient, ResponseCache, DEFAULT_TTL};
 use assetcraft_core::{
-    AssetFormat, AssetId, AssetSummary, Config, LibraryItem, Page, Preference, SearchQuery,
+    AssetFormat, AssetId, AssetSummary, Config, LibraryItem, Page, Paths, Preference, SearchQuery,
     SelectionCriteria, SortOrder,
 };
 use assetcraft_download::{BandwidthLimit, DownloadFile, DownloadOptions, Downloader, Manifest};
-use assetcraft_library::{Library, MediaCache};
+use assetcraft_library::{Download, Library, MediaCache};
 use assetcraft_transfer::Phase;
 
 /// Browse and download Megascans / Fab assets.
@@ -40,7 +40,7 @@ enum Command {
     Formats(FormatsArgs),
     /// Resolve an owned asset into the chunks and files to fetch (requires sign-in).
     Resolve(ResolveArgs),
-    /// Download an owned asset's files and reassemble them (requires sign-in).
+    /// Download or re-download an owned asset's files and reassemble them (requires sign-in).
     Download(DownloadArgs),
     /// Lay out an asset's downloaded files for a DCC and write the import script.
     Export(ExportArgs),
@@ -203,12 +203,20 @@ struct DownloadArgs {
     select: SelectionArgs,
 
     /// Directory to write the asset's files into.
+    ///
+    /// Omit it to write back to the location the library recorded for the
+    /// asset — what makes `assetcraft download <asset-id>` on its own a
+    /// re-download — or, for a first download, the standard asset directory.
     #[arg(long, short)]
-    output: PathBuf,
+    output: Option<PathBuf>,
 
     /// Base URL the manifest's chunk paths hang off, e.g. `…/CloudDir`.
+    ///
+    /// Omit it to derive the base from the directory of the manifest URL the
+    /// signed download-info response returns. Pass it only when a real
+    /// response pairs a different base with the manifest.
     #[arg(long)]
-    chunk_base: String,
+    chunk_base: Option<String>,
 
     /// Total attempts per chunk, including the first.
     #[arg(long, default_value_t = 3)]
@@ -749,14 +757,37 @@ async fn signed_in_client(config: &Config) -> Result<FabClient> {
 /// Download an owned asset's chunks, reassemble its files, and verify them.
 ///
 /// The transfer itself lives in `assetcraft-transfer`, which the GUI uses too;
-/// this command supplies the output directory and the chunk base, then records
-/// where the files landed.
+/// this command supplies the output directory and chunk base, then records
+/// where the files landed. With no `--output` the files go back to the
+/// location the library holds for the asset — or, the first time, to the
+/// standard asset directory — so re-downloading takes only the asset id. With
+/// no `--chunk-base` the base is the manifest URL's directory, which
+/// `assetcraft-transfer` takes from the signed download-info response.
 async fn download(config: &Config, args: DownloadArgs) -> Result<()> {
     let client = signed_in_client(config).await?;
+    let library =
+        Library::open(config.paths.library_file()).context("could not open the local library")?;
+    let recorded = library
+        .download(&AssetId::new(&args.asset_id))
+        .context("could not read the library")?;
+
+    let (output, source) = download_output(args.output, recorded, &config.paths, &args.asset_id);
+    match source {
+        OutputSource::Flag => {}
+        OutputSource::Recorded => println!(
+            "Re-downloading to the location the library recorded: {}",
+            output.display()
+        ),
+        OutputSource::Standard => println!(
+            "First download: writing to the standard asset directory: {}",
+            output.display()
+        ),
+    }
+
     let request = assetcraft_transfer::Request {
         asset_id: args.asset_id.clone(),
-        output: args.output.clone(),
-        chunk_base: Some(args.chunk_base.clone()),
+        output,
+        chunk_base: args.chunk_base.clone(),
         criteria: args.select.criteria(),
         options: DownloadOptions {
             max_attempts: args.attempts,
@@ -793,9 +824,8 @@ async fn download(config: &Config, args: DownloadArgs) -> Result<()> {
 
     // Record where the files landed so `export` can find them again by id with
     // the network off. The path is stored absolute, so the record survives a
-    // different working directory.
-    let library =
-        Library::open(config.paths.library_file()).context("could not open the local library")?;
+    // different working directory. Re-recording is what keeps a re-download's
+    // default output pointing at the newest files.
     library
         .record_download(
             &AssetId::new(&args.asset_id),
@@ -808,6 +838,36 @@ async fn download(config: &Config, args: DownloadArgs) -> Result<()> {
         args.asset_id
     );
     Ok(())
+}
+
+/// Why `download` writes where it writes.
+#[derive(Debug, PartialEq, Eq)]
+enum OutputSource {
+    /// `--output` named the directory.
+    Flag,
+    /// The library's recorded download location for the asset.
+    Recorded,
+    /// The standard per-asset directory under the data directory.
+    Standard,
+}
+
+/// Where a download's files land: `--output` wins; otherwise the directory the
+/// library recorded for the asset — even when its files are gone, so a
+/// re-download restores them where `export` already looks; otherwise the
+/// standard asset directory, the same home the GUI downloads into.
+fn download_output(
+    requested: Option<PathBuf>,
+    recorded: Option<Download>,
+    paths: &Paths,
+    asset_id: &str,
+) -> (PathBuf, OutputSource) {
+    if let Some(output) = requested {
+        return (output, OutputSource::Flag);
+    }
+    if let Some(record) = recorded.filter(|record| !record.path.as_os_str().is_empty()) {
+        return (record.path, OutputSource::Recorded);
+    }
+    (paths.asset_dir(asset_id), OutputSource::Standard)
 }
 
 /// Lay an asset's downloaded files out for a DCC and write the import script.
@@ -1077,5 +1137,75 @@ mod tests {
         assert!(parse_rate("fast").is_err());
         assert!(parse_rate("0").is_err());
         assert!(parse_rate("-5k").is_err());
+    }
+
+    #[test]
+    fn download_accepts_a_bare_asset_id() {
+        // What makes a re-download straight from the library possible: the
+        // output and the chunk base are both optional now.
+        let cli = Cli::try_parse_from(["assetcraft", "download", "an-asset-id"]).unwrap();
+        let Command::Download(args) = cli.command else {
+            panic!("expected the download command");
+        };
+        assert_eq!(args.asset_id, "an-asset-id");
+        assert_eq!(args.output, None);
+        assert_eq!(args.chunk_base, None);
+    }
+
+    #[test]
+    fn download_still_accepts_its_overrides() {
+        let cli = Cli::try_parse_from([
+            "assetcraft",
+            "download",
+            "an-asset-id",
+            "--output",
+            "/tmp/out",
+            "--chunk-base",
+            "https://cdn.example.com/CloudDir",
+        ])
+        .unwrap();
+        let Command::Download(args) = cli.command else {
+            panic!("expected the download command");
+        };
+        assert_eq!(args.output, Some(PathBuf::from("/tmp/out")));
+        assert_eq!(
+            args.chunk_base.as_deref(),
+            Some("https://cdn.example.com/CloudDir")
+        );
+    }
+
+    #[test]
+    fn download_output_prefers_the_flag_then_the_record_then_the_default() {
+        let paths = Paths::rooted_at("/tmp/assetcraft-cli-test");
+        let recorded = Download {
+            path: PathBuf::from("/data/where-it-landed"),
+            format: "fbx".to_string(),
+        };
+
+        let (output, source) = download_output(
+            Some(PathBuf::from("/tmp/hand")),
+            Some(recorded.clone()),
+            &paths,
+            "a",
+        );
+        assert_eq!(output, PathBuf::from("/tmp/hand"));
+        assert_eq!(source, OutputSource::Flag);
+
+        let (output, source) = download_output(None, Some(recorded), &paths, "a");
+        assert_eq!(output, PathBuf::from("/data/where-it-landed"));
+        assert_eq!(source, OutputSource::Recorded);
+
+        let (output, source) = download_output(None, None, &paths, "a");
+        assert_eq!(output, paths.asset_dir("a"));
+        assert_eq!(source, OutputSource::Standard);
+
+        // A record with no usable path is treated as no record.
+        let blank = Download {
+            path: PathBuf::new(),
+            format: String::new(),
+        };
+        let (output, source) = download_output(None, Some(blank), &paths, "a");
+        assert_eq!(output, paths.asset_dir("a"));
+        assert_eq!(source, OutputSource::Standard);
     }
 }

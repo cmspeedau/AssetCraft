@@ -167,8 +167,9 @@ assetcraft formats <asset-id> --format fbx --quality 4K --prefer largest
 assetcraft resolve <asset-id> --format fbx --quality 4K --chunks
 
 # Download and reassemble it, verifying every file (requires sign-in).
-# The CDN base the chunk paths hang off is passed in with --chunk-base until a
-# real signed-in response confirms how Fab supplies it.
+# The CDN base the chunk paths hang off is taken from the manifest URL in the
+# signed download-info response; pass --chunk-base to override it, and --output
+# to write somewhere other than the standard asset directory.
 assetcraft download <asset-id> --format fbx --quality 4K \
   --output ./Downloads --chunk-base https://cdn.example.com/CloudDir
 
@@ -182,6 +183,10 @@ assetcraft library --verify
 
 # Cache thumbnails so the library browses offline
 assetcraft library --thumbnails
+
+# Re-download straight from the library: with no flags, the asset comes back
+# down to the location the library recorded for it (requires sign-in).
+assetcraft download <asset-id>
 
 # Lay a downloaded asset out as a Blender PBR material and write an import
 # script. `download` records where the files landed, so with no --source the

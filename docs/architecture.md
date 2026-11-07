@@ -139,7 +139,7 @@ for its signed download info, read the binary manifest that info points at,
 fetch the chunks, and splice them back into files.
 
 ```
-assetcraft download <id> --format fbx --quality 4K --output dir --chunk-base URL
+assetcraft download <id> --format fbx --quality 4K [--output dir] [--chunk-base URL]
         │
         ▼
 FabClient::listing_formats(&id)         GET /i/listings/{id}/asset-formats (no auth)
@@ -181,11 +181,16 @@ the download engine's definition of done rests on. Chunk parts address the
 *decompressed* chunk bytes, so a chunk file's header is stripped and its zlib
 body inflated before splicing.
 
-The one piece that is not automatic is the CDN base URL the chunk paths hang
-off: the manifest carries each chunk's relative path but not the host, and how
-Fab pairs a base with a manifest can only be confirmed against a real signed-in
-response, so `download` requires it as `--chunk-base`. `resolve` stops at
-printing the plan and needs no base.
+The one piece that is not confirmed against real data is the CDN base URL the
+chunk paths hang off: the manifest carries each chunk's relative path but not
+the host, and how Fab pairs a base with a manifest can only be confirmed against
+a real signed-in response. Until then the transfer layer derives the base from
+the directory of the signed manifest URL — the layout the documented examples
+and the stub server use — and `download` takes `--chunk-base` as an override for
+a response that pairs something else. `resolve` stops at printing the plan and
+needs no base. With no `--output`, `download` writes to the location the library
+recorded for the asset — or, the first time, to the standard asset directory —
+which is what lets `assetcraft download <id>` alone re-download an owned asset.
 
 The manifest and chunk parsers are faithful ports of the layout the wider Epic
 tooling ecosystem documents, and their byte layouts are pinned by hand-built

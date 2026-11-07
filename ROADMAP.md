@@ -14,13 +14,15 @@ change as we learn. See [README.md](README.md) for what the project is.
   concurrency, resumption, retries, integrity verification, a global bandwidth
   limit), the persistent queue, format and quality selection, the binary
   manifest parser, and chunk reassembly (decode a chunk file, splice its parts
-  into the files, verify each file's SHA-1) are all in. What remains is the CDN
-  base URL Fab pairs with the manifest, which has to be confirmed against a real
-  signed-in response.
-- **M3 — Library:** in progress. A SQLite library backs offline browse, search,
-  an integrity check, a thumbnail cache, and repair. A downloaded asset's
-  location is recorded, so previously downloaded assets are browsable and
-  re-exportable by id with the network off. Re-download from the library remains.
+  into the files, verify each file's SHA-1) are all in. A fetch now takes the
+  CDN base URL from the signed manifest URL's directory by default; confirming
+  that pairing against a real signed-in response is the manual validation step
+  that remains.
+- **M3 — Library:** complete. A SQLite library backs offline browse, search, an
+  integrity check, a thumbnail cache, and repair. A downloaded asset's location
+  is recorded, so previously downloaded assets are browsable and re-exportable
+  by id with the network off, and re-downloadable by id: `download` with no
+  flags brings an asset back to its recorded location.
 - **M4 — Blender Export:** in progress. A Blender adapter lays an asset's files
   out in a standardized PBR tree, classifies each map into a Principled BSDF
   material graph, and writes a version-tolerant Python script; `export --run`
@@ -127,8 +129,9 @@ Get bytes on disk, reliably.
 > data is a validation step. Format and quality selection sits between them: it
 > works over the format metadata the catalog already returns, so it did not have
 > to wait for the parser. `assetcraft download` ties resolution, chunk fetching,
-> and reassembly together, but it needs the CDN base URL passed in with
-> `--chunk-base` until a real signed-in response confirms how Fab derives it.
+> and reassembly together; the chunk base defaults to the directory of the
+> manifest URL the signed download-info response returns, and `--chunk-base`
+> overrides it for a response that pairs the manifest with a different base.
 > See `docs/architecture.md`.
 
 **DoD:** A large asset can be downloaded, interrupted mid-transfer, resumed to
@@ -136,9 +139,11 @@ completion, and verified — with no corruption.
 
 > **Reaching the DoD.** Every piece is in place and tested in isolation: the
 > engine resumes and verifies transfers, the manifest names the chunks, and
-> reassembly checks each output file's SHA-1. The one gap is the CDN base URL
-> the chunk paths hang off, which `assetcraft download` takes as `--chunk-base`
-> until a real signed-in response confirms how Fab supplies it.
+> reassembly checks each output file's SHA-1. The one thing left to confirm
+> against a real signed-in response is the CDN base URL the chunk paths hang
+> off: a fetch derives it from the manifest URL's directory by default, and
+> `--chunk-base` overrides the derivation if a real response pairs a different
+> base with the manifest.
 
 ### M3 — Library → `v0.4.0`
 
@@ -159,8 +164,11 @@ Own what you have, even offline.
 - [x] Repair damaged entries, rather than only reporting them
       (`assetcraft library --repair` realigns stale titles and drops rows whose
       stored item can no longer be read, leaving their download record in place).
-- [ ] Re-download straight from the library — the exporter is ready, but a fresh
-      fetch still needs the CDN base URL M2 has not confirmed (see M2).
+- [x] Re-download straight from the library — `assetcraft download <asset-id>`
+      alone is enough: the files come back down to the location the library
+      recorded, and the chunk base is derived from the signed download-info
+      response by default (`--chunk-base` stays as an override until a real
+      signed-in response confirms the pairing).
 
 **DoD:** With the network disabled, previously downloaded assets are fully
 browsable and re-exportable.
@@ -169,8 +177,10 @@ browsable and re-exportable.
 > re-export now covers the rest: a download records its output directory in the
 > library, `export` resolves an asset from that record, and the Blender adapter
 > lays out the files and writes the import script — none of which touches the
-> network. A *re-download* is the one action that cannot happen offline, so it
-> stays open with the CDN base URL that gates it.
+> network. A *re-download* is by nature the one action that needs the network,
+> and it is in too: `assetcraft download <asset-id>` with no flags brings an
+> asset back to its recorded location, supplying its own chunk base from the
+> signed response.
 
 ### M4 — Blender Export → `v0.5.0`
 
@@ -196,8 +206,9 @@ correctly-textured material in Blender.
 > **Reaching the DoD.** The layout, role classification, and material graph are
 > pure and covered by tests, and the generated script is inspected by tests for
 > the sockets and imports it emits. Blender itself is not in CI, so the final
-> "does it look right in the viewport" check — and the CDN base URL still needed
-> to fetch the bytes in the first place — remain manual validation steps.
+> "does it look right in the viewport" check — and the chunk base derivation
+> still to confirm against a real signed-in response before a first download —
+> remain manual validation steps.
 
 ### M5 — GUI & Packaging → `v1.0.0`
 
@@ -265,8 +276,9 @@ correctly-textured `StandardMaterial3D`/`ORMMaterial3D` in Godot.
 > tested in M4; the new surface is the GDScript/`.tscn` emission and ORM packing,
 > which are likewise pure and covered by tests inspecting the script and scene
 > they emit and the ORM channels they write. Godot itself is not in CI, so — as
-> with Blender — the "does it look right in the viewport" check, and the CDN base
-> URL still needed to fetch the bytes, remain manual validation steps.
+> with Blender — the "does it look right in the viewport" check, and the chunk
+> base derivation still to confirm before the bytes can be fetched, remain
+> manual validation steps.
 
 ## Cross-cutting tracks
 

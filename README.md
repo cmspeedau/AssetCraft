@@ -10,9 +10,10 @@ your content-creation tools. It is built for speed, a small footprint, and clean
 cross-platform behavior on Windows, macOS, and Linux.
 
 > **Status: pre-alpha.** The workspace builds, the CLI can search the Fab
-> catalog and sign in to your account, and CI runs on Linux, macOS, and Windows.
-> There is no desktop UI yet. See [ROADMAP.md](ROADMAP.md) for what lands next,
-> or jump to [Building from source](#building-from-source) to try the CLI.
+> catalog, sign in, download an owned asset, and export it to Blender, a first
+> egui desktop app is in-tree (no installers yet), and CI runs on Linux,
+> macOS, and Windows. See [ROADMAP.md](ROADMAP.md) for what lands next, or
+> jump to [Building from source](#building-from-source) to try the CLI.
 
 ---
 
@@ -34,6 +35,7 @@ endorsed by, or supported by Epic Games, Quixel, or Fab.
 
 ## Table of contents
 
+- [The promises](#the-promises)
 - [Features](#features)
 - [Architecture](#architecture)
 - [Installation](#installation)
@@ -48,10 +50,33 @@ endorsed by, or supported by Epic Games, Quixel, or Fab.
 
 ---
 
+## The promises
+
+Two of AssetCraft's milestone definitions of done are really product
+promises — they are written here because they shape every feature and every
+integration:
+
+- **Offline-first.** *With the network disabled, previously downloaded assets
+  are fully browsable and re-exportable.* Everything already on disk stays
+  usable; the only action that needs a connection is fetching bytes you do
+  not have yet.
+- **No terminal required.** *A non-developer can install AssetCraft, sign in,
+  download an asset, and export it into their DCC* — end to end, from the
+  desktop app.
+
+That is the contract every DCC integration ships against — Blender today,
+Godot next, whatever else lands: `export` reads the files the library
+recorded, with the network off, and the desktop app drives sign-in, download,
+and export so the terminal stays closed. An integration that misses either
+half is not finished. See [ROADMAP.md](ROADMAP.md) for what works today and
+what is still landing.
+
+---
+
 ## Features
 
-**Planned.** Nothing here is implemented yet; this is the target surface for
-`v1.0`.
+Target surface for `v1.0`. Much of it is in; [ROADMAP.md](ROADMAP.md) tracks
+what already works and what is still landing.
 
 ### Catalog
 
@@ -79,6 +104,8 @@ endorsed by, or supported by Epic Games, Quixel, or Fab.
 
 - Standardized PBR folder layout (base color, normal, roughness, AO, etc.).
 - One-click export to DCC tools, starting with **Blender**.
+- Re-export of anything already downloaded, with the network off — export
+  reads the files the library recorded, never Fab.
 - A headless CLI for scripted and CI workflows.
 
 ### App
@@ -109,11 +136,15 @@ headless CLI.
 | `assetcraft-gui` | bin | egui desktop app: browse, search, filter, and open asset details. |
 
 Dependency direction is one-way: binaries depend on the service and core crates,
-never the reverse. DCC adapters implement a shared export trait defined in
-`assetcraft-core`, so new integrations are additive.
+never the reverse. DCC adapters are pure over local files: they read the source
+the library recorded and write the layout and the generated script, and they
+never touch the network — fetching is the transfer layer's job. That is what
+makes [the promises](#the-promises) structural rather than per-plugin effort,
+and what lets new integrations be additive; the shared export trait that
+formalizes the shape lands with the second adapter (roadmap M6).
 
-A more detailed diagram and design notes will live in `docs/architecture.md`
-(planned).
+Detailed diagrams and design notes — including the plugin contract behind
+[the promises](#the-promises) — live in [docs/architecture.md](docs/architecture.md).
 
 ---
 
@@ -229,6 +260,10 @@ The exact file format is TBD (TOML is the working assumption).
 | Maya | Under consideration |
 | Houdini | Under consideration |
 | Unity | Under consideration |
+
+An integration joins this list when it meets [the promises](#the-promises):
+export from the library with the network off, and a path the desktop app can
+drive end to end without a terminal.
 
 Want a DCC on this list? Open an issue describing your workflow.
 

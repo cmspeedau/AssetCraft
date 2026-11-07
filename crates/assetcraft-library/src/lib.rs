@@ -18,6 +18,12 @@
 //! disk and where their files live, so a previously downloaded asset can be
 //! re-exported by id with the network off. The path is local state, kept apart
 //! from the Fab-sourced [`LibraryItem`] JSON so a re-sync never overwrites it.
+//!
+//! The third and fourth tables are the user's own organisation, which the app
+//! persists next to the index it organises: `favorites` (a set of asset ids)
+//! and `collections` with `collection_items` (named groups). These are local
+//! state like download records — never Fab-sourced, never rebuilt by a sync —
+//! and removing an asset clears it out of all of them.
 
 use std::path::{Path, PathBuf};
 
@@ -41,6 +47,18 @@ CREATE TABLE IF NOT EXISTS downloads (
     asset_id TEXT PRIMARY KEY NOT NULL,
     path     TEXT NOT NULL,
     format   TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS favorites (
+    asset_id TEXT PRIMARY KEY NOT NULL
+);
+CREATE TABLE IF NOT EXISTS collections (
+    id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE
+);
+CREATE TABLE IF NOT EXISTS collection_items (
+    collection_id INTEGER NOT NULL REFERENCES collections (id) ON DELETE CASCADE,
+    asset_id      TEXT NOT NULL,
+    PRIMARY KEY (collection_id, asset_id)
 );
 ";
 
@@ -102,6 +120,17 @@ pub struct Download {
     pub format: String,
 }
 
+/// A named group of assets, as the user drew it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Collection {
+    /// The database row id, stable for the collection's life.
+    pub id: i64,
+    /// The name, unique case-insensitively.
+    pub name: String,
+    /// How many assets it currently holds.
+    pub asset_count: usize,
+}
+
 impl Library {
     /// Open (or create) the library at `path`, creating parent directories.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -118,6 +147,10 @@ impl Library {
     }
 
     fn from_connection(conn: Connection) -> Result<Self> {
+        // `collection_items` relies on `ON DELETE CASCADE` from `collections`,
+        // and foreign keys are off unless every connection asks for them.
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .map_err(database)?;
         conn.execute_batch(SCHEMA).map_err(database)?;
         Ok(Self { conn })
     }
@@ -163,6 +196,8 @@ impl Library {
     ///
     /// Any recorded download goes with it, so a later re-download is recorded
     /// fresh rather than pointing at a directory that has been cleared out.
+    /// Favouriting and collection membership are the user's notes about an
+    /// asset, and a removed asset must not linger in them as a dead row.
     pub fn remove(&self, id: &AssetId) -> Result<bool> {
         let changed = self
             .conn
@@ -171,12 +206,14 @@ impl Library {
                 rusqlite::params![id.as_str()],
             )
             .map_err(database)?;
-        self.conn
-            .execute(
-                "DELETE FROM downloads WHERE asset_id = ?1",
-                rusqlite::params![id.as_str()],
-            )
-            .map_err(database)?;
+        for table in ["downloads", "favorites", "collection_items"] {
+            self.conn
+                .execute(
+                    &format!("DELETE FROM {table} WHERE asset_id = ?1"),
+                    rusqlite::params![id.as_str()],
+                )
+                .map_err(database)?;
+        }
         Ok(changed > 0)
     }
 
@@ -278,6 +315,208 @@ impl Library {
             )
             .map_err(database)?;
         Ok(changed > 0)
+    }
+
+    // ----- favourites and collections ---------------------------------------
+
+    /// Mark an asset as a favourite, reporting whether that added it.
+    pub fn favorite(&self, id: &AssetId) -> Result<bool> {
+        let changed = self
+            .conn
+            .execute(
+                "INSERT OR IGNORE INTO favorites (asset_id) VALUES (?1)",
+                rusqlite::params![id.as_str()],
+            )
+            .map_err(database)?;
+        Ok(changed > 0)
+    }
+
+    /// Clear an asset's favourite, reporting whether it was one.
+    pub fn unfavorite(&self, id: &AssetId) -> Result<bool> {
+        let changed = self
+            .conn
+            .execute(
+                "DELETE FROM favorites WHERE asset_id = ?1",
+                rusqlite::params![id.as_str()],
+            )
+            .map_err(database)?;
+        Ok(changed > 0)
+    }
+
+    /// The favourite asset ids.
+    pub fn favorites(&self) -> Result<Vec<String>> {
+        self.strings("SELECT asset_id FROM favorites ORDER BY asset_id", [])
+    }
+
+    /// Create a collection. Names are unique case-insensitively — the point is
+    /// organising, and two panels that differ only in capitalisation would
+    /// undermine that.
+    pub fn create_collection(&self, name: &str) -> Result<Collection> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Error::Other("a collection needs a name".to_string()));
+        }
+        self.require_name_free(name, None)?;
+        self.conn
+            .execute(
+                "INSERT INTO collections (name) VALUES (?1)",
+                rusqlite::params![name],
+            )
+            .map_err(database)?;
+        Ok(Collection {
+            id: self.conn.last_insert_rowid(),
+            name: name.to_owned(),
+            asset_count: 0,
+        })
+    }
+
+    /// Rename a collection, reporting whether the id was one. The same
+    /// uniqueness rule as [`create_collection`][Self::create_collection] holds.
+    pub fn rename_collection(&self, id: i64, name: &str) -> Result<bool> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Error::Other("a collection needs a name".to_string()));
+        }
+        self.require_name_free(name, Some(id))?;
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE collections SET name = ?1 WHERE id = ?2",
+                rusqlite::params![name, id],
+            )
+            .map_err(database)?;
+        Ok(changed > 0)
+    }
+
+    /// Delete a collection. Its membership rows go with it (the foreign key
+    /// cascades); the assets themselves are untouched — removing an organising
+    /// hat is not removing the asset.
+    pub fn delete_collection(&self, id: i64) -> Result<bool> {
+        let changed = self
+            .conn
+            .execute(
+                "DELETE FROM collections WHERE id = ?1",
+                rusqlite::params![id],
+            )
+            .map_err(database)?;
+        Ok(changed > 0)
+    }
+
+    /// Every collection, by name, with its current asset count.
+    pub fn list_collections(&self) -> Result<Vec<Collection>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT c.id, c.name, COUNT(i.asset_id)
+                 FROM collections c
+                 LEFT JOIN collection_items i ON i.collection_id = c.id
+                 GROUP BY c.id
+                 ORDER BY c.name COLLATE NOCASE",
+            )
+            .map_err(database)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(Collection {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    asset_count: row.get::<_, i64>(2)? as usize,
+                })
+            })
+            .map_err(database)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(database)?);
+        }
+        Ok(out)
+    }
+
+    /// The asset ids a collection holds, in the order the library lists them
+    /// (title first), so a collection view reads like the Local view.
+    pub fn collection_members(&self, id: i64) -> Result<Vec<String>> {
+        self.strings(
+            "SELECT i.asset_id FROM collection_items i
+             LEFT JOIN assets a ON a.id = i.asset_id
+             WHERE i.collection_id = ?1
+             ORDER BY COALESCE(a.title, i.asset_id) COLLATE NOCASE, i.asset_id",
+            rusqlite::params![id],
+        )
+    }
+
+    /// The collection ids an asset belongs to, for the detail panel's checks.
+    pub fn collections_for(&self, id: &AssetId) -> Result<Vec<i64>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT collection_id FROM collection_items WHERE asset_id = ?1")
+            .map_err(database)?;
+        let rows = stmt
+            .query_map(rusqlite::params![id.as_str()], |row| row.get::<_, i64>(0))
+            .map_err(database)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(database)?);
+        }
+        Ok(out)
+    }
+
+    /// Put an asset in a collection, reporting whether that added it. Adding
+    /// twice is a no-op, not an error — a checkbox that fired twice should not
+    /// complain.
+    pub fn add_to_collection(&self, id: i64, asset: &AssetId) -> Result<bool> {
+        let changed = self
+            .conn
+            .execute(
+                "INSERT OR IGNORE INTO collection_items (collection_id, asset_id)
+                 VALUES (?1, ?2)",
+                rusqlite::params![id, asset.as_str()],
+            )
+            .map_err(database)?;
+        Ok(changed > 0)
+    }
+
+    /// Take an asset out of a collection, reporting whether it was in it.
+    pub fn remove_from_collection(&self, id: i64, asset: &AssetId) -> Result<bool> {
+        let changed = self
+            .conn
+            .execute(
+                "DELETE FROM collection_items WHERE collection_id = ?1 AND asset_id = ?2",
+                rusqlite::params![id, asset.as_str()],
+            )
+            .map_err(database)?;
+        Ok(changed > 0)
+    }
+
+    /// Whether any other collection already answers to `name` (case folding
+    /// like the UNIQUE index, so the error arrives as "someone else took this
+    /// name" rather than as a raw constraint message).
+    fn require_name_free(&self, name: &str, except_id: Option<i64>) -> Result<()> {
+        let taken: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM collections WHERE name = ?1 COLLATE NOCASE
+                 AND id != ?2",
+                rusqlite::params![name, except_id.unwrap_or(-1)],
+                |row| row.get(0),
+            )
+            .map_err(database)?;
+        if taken > 0 {
+            return Err(Error::Other(format!(
+                "there is already a collection called {name}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Run a query returning one string per row from column 0.
+    fn strings(&self, sql: &str, params: impl rusqlite::Params) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(sql).map_err(database)?;
+        let rows = stmt
+            .query_map(params, |row| row.get::<_, String>(0))
+            .map_err(database)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(database)?);
+        }
+        Ok(out)
     }
 
     /// Check every row can be read back.
@@ -721,5 +960,130 @@ mod tests {
         // The metadata row is gone, but the on-disk files stay tracked.
         assert!(!library.contains(&AssetId::new("bad")).unwrap());
         assert!(library.download(&AssetId::new("bad")).unwrap().is_some());
+    }
+
+    #[test]
+    fn favorites_round_trip_and_survive_a_reopen() {
+        let file = tempfile::tempdir().unwrap().keep().join("lib.sqlite");
+        let library = Library::open(&file).unwrap();
+        assert!(library.favorite(&AssetId::new("a")).unwrap());
+        // Favouriting twice adds nothing.
+        assert!(!library.favorite(&AssetId::new("a")).unwrap());
+        assert!(library.favorite(&AssetId::new("b")).unwrap());
+        assert_eq!(
+            library.favorites().unwrap(),
+            ["a".to_string(), "b".to_string()]
+        );
+
+        drop(library);
+        let reopened = Library::open(&file).unwrap();
+        assert_eq!(
+            reopened.favorites().unwrap(),
+            ["a".to_string(), "b".to_string()]
+        );
+        assert!(reopened.unfavorite(&AssetId::new("a")).unwrap());
+        assert!(!reopened.unfavorite(&AssetId::new("a")).unwrap());
+        assert_eq!(reopened.favorites().unwrap(), ["b".to_string()]);
+    }
+
+    #[test]
+    fn collections_need_a_name_and_a_unique_one() {
+        let library = library();
+        assert!(library.create_collection("   ").is_err());
+        let rocks = library.create_collection("  Rocks  ").unwrap();
+        assert_eq!(rocks.name, "Rocks", "the name arrives trimmed");
+        assert_eq!(rocks.asset_count, 0);
+        // Case-insensitive: two panels differing only in capitalisation would
+        // defeat the point of organising.
+        assert!(library.create_collection("rocks").is_err());
+        // Renaming onto its own name (any capitalisation) is a no-op, not a
+        // clash with itself.
+        assert!(library.rename_collection(rocks.id, "ROCKS ").is_ok());
+        assert!(library.rename_collection(rocks.id, "Stones").unwrap());
+        assert_eq!(library.list_collections().unwrap()[0].name, "Stones");
+        assert!(!library.rename_collection(404, "Whatever").unwrap());
+    }
+
+    #[test]
+    fn membership_adds_once_orders_by_title_and_can_be_taken_back() {
+        let library = library();
+        for (id, title) in [("b", "Beta Rock"), ("a", "Alpha Rock")] {
+            library.insert(&item(id, title)).unwrap();
+        }
+        let rocks = library.create_collection("Rocks").unwrap();
+
+        assert!(library
+            .add_to_collection(rocks.id, &AssetId::new("b"))
+            .unwrap());
+        assert!(library
+            .add_to_collection(rocks.id, &AssetId::new("a"))
+            .unwrap());
+        assert!(!library
+            .add_to_collection(rocks.id, &AssetId::new("a"))
+            .unwrap());
+
+        // Title order, so a collection reads like the Local view rather than in
+        // whatever order boxes got clicked.
+        assert_eq!(
+            library.collection_members(rocks.id).unwrap(),
+            ["a".to_string(), "b".to_string()]
+        );
+        assert_eq!(
+            library.collections_for(&AssetId::new("a")).unwrap(),
+            vec![rocks.id]
+        );
+
+        let listed = library.list_collections().unwrap();
+        assert_eq!(listed[0].asset_count, 2);
+
+        assert!(library
+            .remove_from_collection(rocks.id, &AssetId::new("a"))
+            .unwrap());
+        assert!(!library
+            .remove_from_collection(rocks.id, &AssetId::new("a"))
+            .unwrap());
+        assert_eq!(library.list_collections().unwrap()[0].asset_count, 1);
+    }
+
+    #[test]
+    fn deleting_a_collection_or_an_asset_clears_membership_not_assets() {
+        let library = library();
+        library.insert(&item("a", "Alpha")).unwrap();
+        let rocks = library.create_collection("Rocks").unwrap();
+        library
+            .add_to_collection(rocks.id, &AssetId::new("a"))
+            .unwrap();
+
+        assert!(library.delete_collection(rocks.id).unwrap());
+        assert!(!library.delete_collection(rocks.id).unwrap());
+        // Cascade took the membership row; the asset stays owned.
+        assert!(library.collection_members(rocks.id).unwrap().is_empty());
+        assert!(library.contains(&AssetId::new("a")).unwrap());
+
+        // And removing the asset drops it from the other side of the relation.
+        let again = library.create_collection("Again").unwrap();
+        library
+            .add_to_collection(again.id, &AssetId::new("a"))
+            .unwrap();
+        library.favorite(&AssetId::new("a")).unwrap();
+        library.remove(&AssetId::new("a")).unwrap();
+        assert!(library.collection_members(again.id).unwrap().is_empty());
+        assert!(library.favorites().unwrap().is_empty());
+    }
+
+    #[test]
+    fn membership_of_an_asset_the_library_lost_still_lists() {
+        // A collection can name an asset whose metadata row has gone (a repair
+        // dropped it). Listing must not lose the id for the missing join.
+        let library = library();
+        let rocks = library.create_collection("Rocks").unwrap();
+        library
+            .add_to_collection(rocks.id, &AssetId::new("ghost"))
+            .unwrap();
+        assert_eq!(
+            library.collection_members(rocks.id).unwrap(),
+            ["ghost".to_string()]
+        );
+        assert_eq!(library.list_collections().unwrap()[0].asset_count, 1);
     }
 }

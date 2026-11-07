@@ -100,6 +100,8 @@ what already works and what is still landing.
 
 - Local SQLite index of everything you own, independent of the app that fetched it.
 - Deduplication by asset ID, with re-download and re-export from the library.
+- Favorites and named collections, kept in the library: the app organises the
+  assets you hold, and the same notes are there next launch.
 - Thumbnail and preview cache for fast, offline browsing.
 
 ### Integrations
@@ -114,6 +116,9 @@ what already works and what is still landing.
 
 - A fast, native **egui** desktop UI with a small install footprint.
 - Cross-platform builds for Windows, macOS, and Linux.
+- A Collections view for the local library: named groups, opened like a folder,
+  with membership edited from the asset detail panel.
+- A Settings dialog over the same `settings.toml` the CLI reads.
 - Auto-update.
 
 See [ROADMAP.md](ROADMAP.md) for the order in which these ship.
@@ -261,12 +266,30 @@ AssetCraft follows platform conventions for config, cache, and data directories
 
 | Path | Contents |
 | --- | --- |
-| Config | Settings, default quality tier and format, DCC paths. |
+| Config | `settings.toml` (below) and other configuration files. |
 | Cache | API response cache, thumbnails, partial downloads. |
-| Data | Local library index (SQLite) and downloaded assets. |
+| Data | Local library index (SQLite: owned assets, download records, favourites, collections) and downloaded assets. |
 | Tokens | OAuth credentials, in the OS keyring where one answers; otherwise an owner-only private file, never world-readable. |
 
-The exact file format is TBD (TOML is the working assumption).
+`settings.toml` holds the user's own choices, in plain TOML. Every key is
+optional — the file describes departures from the defaults, and a missing file
+is simply the defaults. A file that exists but cannot be read is reported, not
+quietly worked around.
+
+```toml
+# The quality tier the download picker starts on, as `--quality` words it.
+# Leave unset to take whatever quality the asset's first file offers.
+default_quality = "4K"
+
+# Root for downloads: one directory per asset id under this one.
+# Leave unset for the standard asset directory under the data directory.
+download_dir = "/media/assets"
+```
+
+Both binaries read the file at the point of use, so an edit takes effect on the
+next download with nothing restarted: the app's Settings dialog is a front end
+for this same file, and `assetcraft download` obeys both keys while `--output`
+and `--quality` still outrank them.
 
 ---
 

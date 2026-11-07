@@ -8,16 +8,19 @@
 
 use std::collections::{HashMap, HashSet};
 
-use assetcraft_core::{AssetId, Config};
-use assetcraft_library::Library;
+use assetcraft_core::{AssetId, Config, Settings};
+use assetcraft_library::{Collection, Library};
 use assetcraft_transfer::Phase;
 
 use crate::data::{self, Card, Filters, View};
 use crate::worker::{Account, CatalogWorker, Command, Event};
 use crate::{grid, icons, theme};
 
-/// Resolution choices for the demo download flow.
-const RESOLUTIONS: [&str; 4] = ["2K", "4K", "8K", "16K"];
+/// Resolution choices for the download flow; the first entry means "no
+/// preference" and lets the engine take the first file the asset offers.
+/// The settings dialog's default-quality uses the same list, so a stored
+/// quality and a picker position are the same thing.
+const QUALITY_CHOICES: [&str; 5] = ["No preference", "2K", "4K", "8K", "16K"];
 /// How long the search box waits after the last keystroke before searching.
 const QUERY_DEBOUNCE: f64 = 0.3;
 /// Height reserved for the detail panel's action bar.
@@ -144,6 +147,22 @@ pub struct App {
     owned_cards: Vec<Card>,
     owned_cursor: Option<String>,
     owned_loaded: bool,
+    /// The user's choices, as read at startup (the worker re-reads them per
+    /// download, so editing the file by hand still takes effect).
+    settings: Settings,
+    /// Kept to know where the settings file lives when the dialog saves it.
+    config: Option<Config>,
+    settings_error: Option<String>,
+    settings_open: bool,
+    settings_dir: String,
+    settings_quality: usize,
+    collections: Vec<Collection>,
+    /// The open collection in the Collections view; `None` is the list.
+    active_collection: Option<i64>,
+    collection_new: String,
+    collection_renaming: Option<(i64, String)>,
+    collection_delete_armed: Option<i64>,
+    collections_error: Option<String>,
 }
 
 impl Default for App {
@@ -169,7 +188,7 @@ impl Default for App {
             dirty_at: 0.0,
             selected: None,
             checked: HashSet::new(),
-            resolution: 1,
+            resolution: 0,
             jobs: Vec::new(),
             last_time: None,
             account: None,
@@ -187,6 +206,18 @@ impl Default for App {
             owned_cards: Vec::new(),
             owned_cursor: None,
             owned_loaded: false,
+            settings: Settings::default(),
+            config: None,
+            settings_error: None,
+            settings_open: false,
+            settings_dir: String::new(),
+            settings_quality: 0,
+            collections: Vec::new(),
+            active_collection: None,
+            collection_new: String::new(),
+            collection_renaming: None,
+            collection_delete_armed: None,
+            collections_error: None,
         }
     }
 }
@@ -220,6 +251,23 @@ impl App {
                     Err(error) => app.library_error = Some(error.to_string()),
                 }
 
+                // The user's own choices: where downloads land, which quality
+                // the picker starts on. A broken file is said so, not worked
+                // around — defaults would quietly undo what was chosen.
+                match Settings::load(&config.paths) {
+                    Ok(settings) => {
+                        if let Some(quality) = settings.default_quality.as_deref() {
+                            app.resolution = QUALITY_CHOICES
+                                .iter()
+                                .position(|r| r.eq_ignore_ascii_case(quality))
+                                .unwrap_or(app.resolution);
+                        }
+                        app.settings = settings;
+                    }
+                    Err(error) => app.settings_error = Some(error.to_string()),
+                }
+                app.config = Some(config.clone());
+
                 app.worker = CatalogWorker::spawn(cc.egui_ctx.clone(), config);
                 if app.worker.is_none() {
                     app.source = Source::Demo;
@@ -245,6 +293,10 @@ impl App {
     // ----- data flow -------------------------------------------------------
 
     /// Read the local library into cards and remember which assets are held.
+    ///
+    /// Favourites and collections are read in the same breath: they live in
+    /// the same database, describe the same assets, and a view that showed
+    /// half-current organisation over fresh cards would lie about neither.
     fn reload_local(&mut self) {
         let Some(library) = &self.library else {
             self.local_cards.clear();
@@ -261,6 +313,35 @@ impl App {
                 self.library_error = Some(error.to_string());
             }
         }
+        match library.favorites() {
+            Ok(favorites) => self.favorites = favorites.into_iter().collect(),
+            Err(error) => self.library_error = Some(error.to_string()),
+        }
+        self.reload_collections();
+    }
+
+    /// Re-read the collection list, keeping an open collection open while it
+    /// still exists (its count just changed, or it was deleted out from under
+    /// the view, in which case the list panel takes its place).
+    fn reload_collections(&mut self) {
+        let Some(library) = &self.library else {
+            self.collections.clear();
+            self.active_collection = None;
+            return;
+        };
+        match library.list_collections() {
+            Ok(collections) => {
+                self.collections = collections;
+                self.collections_error = None;
+                if self
+                    .active_collection
+                    .is_some_and(|id| !self.collections.iter().any(|c| c.id == id))
+                {
+                    self.active_collection = None;
+                }
+            }
+            Err(error) => self.collections_error = Some(error.to_string()),
+        }
     }
 
     /// Kick off a fresh search for the current query and filters.
@@ -273,6 +354,26 @@ impl App {
             self.loading = false;
             self.reload_local();
             self.cards = self.local_cards.clone();
+            self.selected = None;
+            return;
+        }
+        if self.view == View::Collections {
+            self.loading = false;
+            self.reload_collections();
+            // The list panel draws itself; an open collection gets the cards
+            // of the assets it holds, read from the same local library.
+            let loaded = match (&self.library, self.active_collection) {
+                (Some(library), Some(id)) => Some(collection_cards(library, id)),
+                _ => None,
+            };
+            self.cards = match loaded {
+                Some(Ok(cards)) => cards,
+                Some(Err(error)) => {
+                    self.library_error = Some(error.to_string());
+                    Vec::new()
+                }
+                None => Vec::new(),
+            };
             self.selected = None;
             return;
         }
@@ -595,6 +696,7 @@ impl App {
                     }
                     View::Favorites => Some(self.favorites.len()),
                     View::Local => Some(self.local_cards.len()),
+                    View::Collections => self.library.as_ref().map(|_| self.collections.len()),
                     View::Purchased if self.source == Source::Live => {
                         self.account.as_ref().map(|_| self.owned_cards.len())
                     }
@@ -633,8 +735,11 @@ impl App {
 
     pub fn select(&mut self, i: usize) {
         self.selected = Some(i);
-        // Local items have no marketplace listing to fetch.
-        if self.source != Source::Live || matches!(self.view, View::Local | View::Purchased) {
+        // Local items (and collection views, which are built from them) have
+        // no marketplace listing to fetch.
+        if self.source != Source::Live
+            || matches!(self.view, View::Local | View::Purchased | View::Collections)
+        {
             return;
         }
         let Some(card) = self.cards.get(i) else {
@@ -648,9 +753,101 @@ impl App {
         }
     }
 
+    /// Flip a favourite: in memory so every view updates at once, and in the
+    /// library so the same hearts are there next launch. With no library
+    /// (demo mode, or a library that failed to open) the heart still works for
+    /// the session — the note is the user's, even if the database is not.
     pub fn toggle_favorite(&mut self, id: &str) {
-        if !self.favorites.remove(id) {
+        let added = !self.favorites.remove(id);
+        if added {
             self.favorites.insert(id.to_owned());
+        }
+        if let Some(library) = &self.library {
+            let asset = AssetId::new(id.to_owned());
+            let result = if added {
+                library.favorite(&asset)
+            } else {
+                library.unfavorite(&asset)
+            };
+            if let Err(error) = result {
+                self.library_error = Some(error.to_string());
+            }
+        }
+    }
+
+    // ----- collections -----------------------------------------------------
+
+    /// Create a collection from the list panel's name box.
+    fn create_collection(&mut self) {
+        let Some(library) = &self.library else {
+            return;
+        };
+        match library.create_collection(&self.collection_new) {
+            Ok(_) => {
+                self.collection_new.clear();
+                self.collections_error = None;
+                self.reload_collections();
+            }
+            Err(error) => self.collections_error = Some(error.to_string()),
+        }
+    }
+
+    /// Apply the inline rename editor to its collection.
+    fn rename_collection(&mut self) {
+        let Some((id, name)) = self.collection_renaming.take() else {
+            return;
+        };
+        let Some(library) = &self.library else {
+            return;
+        };
+        match library.rename_collection(id, &name) {
+            Ok(true) => {
+                self.collections_error = None;
+                self.reload_collections();
+            }
+            Ok(false) => self.collections_error = Some("that collection is gone".to_owned()),
+            Err(error) => {
+                self.collections_error = Some(error.to_string());
+                self.collection_renaming = Some((id, name));
+            }
+        }
+    }
+
+    /// Delete a collection. The assets keep their files; only the group goes.
+    fn delete_collection(&mut self, id: i64) {
+        self.collection_delete_armed = None;
+        self.collection_renaming = None;
+        let Some(library) = &self.library else {
+            return;
+        };
+        match library.delete_collection(id) {
+            Ok(_) => {
+                self.collections_error = None;
+                self.reload_collections();
+            }
+            Err(error) => self.collections_error = Some(error.to_string()),
+        }
+    }
+
+    /// Put an asset in or out of a collection from the detail panel's checks.
+    fn toggle_membership(&mut self, collection: i64, asset: &str) {
+        let Some(library) = &self.library else {
+            return;
+        };
+        let asset_id = AssetId::new(asset.to_owned());
+        let result = match library.collections_for(&asset_id) {
+            Ok(memberships) if memberships.contains(&collection) => {
+                library.remove_from_collection(collection, &asset_id)
+            }
+            Ok(_) => library.add_to_collection(collection, &asset_id),
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(_) => {
+                self.collections_error = None;
+                self.reload_collections();
+            }
+            Err(error) => self.collections_error = Some(error.to_string()),
         }
     }
 
@@ -725,11 +922,14 @@ impl App {
                     })
                     .collect(),
             };
-            // The resolution picker is not yet wired to file selection, so the
-            // engine picks the first file of the first format.
+            // The resolution picker chooses the files: a quality is matched
+            // against file names exactly like the CLI's `--quality`, so an
+            // asset that does not carry the chosen tier fails with the named
+            // criteria rather than quietly arriving in another one. The first
+            // picker entry sends no preference, as before.
             worker.send(Command::Download {
                 item,
-                quality: None,
+                quality: (self.resolution > 0).then(|| QUALITY_CHOICES[self.resolution].to_owned()),
             });
         }
         self.jobs.push(Job {
@@ -805,11 +1005,30 @@ impl App {
         ui.add_space(12.0);
 
         let counts = self.nav_counts();
+        let collections = self.collections.clone();
         for (view, count) in counts {
             if nav_row(ui, self.view == view, view.label(), count).clicked() {
                 self.view = view;
+                self.active_collection = None;
                 self.checked.clear();
                 self.start_search(ctx);
+            }
+            if view == View::Collections && self.view == View::Collections {
+                // The open view's collections, indented as its children.
+                for collection in &collections {
+                    let active = self.active_collection == Some(collection.id);
+                    let response = ui
+                        .horizontal(|ui| {
+                            ui.add_space(14.0);
+                            nav_row(ui, active, &collection.name, Some(collection.asset_count))
+                        })
+                        .inner;
+                    if response.clicked() {
+                        self.active_collection = Some(collection.id);
+                        self.checked.clear();
+                        self.start_search(ctx);
+                    }
+                }
             }
         }
 
@@ -835,8 +1054,13 @@ impl App {
 
         let mut open_sign_in = false;
         let mut sign_out = false;
+        let mut open_settings = false;
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-            ui.horizontal(|ui| if ui.button("\u{2699}  Settings").clicked() {});
+            ui.horizontal(|ui| {
+                if ui.button("\u{2699}  Settings").clicked() {
+                    open_settings = true;
+                }
+            });
             ui.horizontal(|ui| {
                 let live = self.source == Source::Live;
                 if selectable(ui, live, "Live", None).clicked() {
@@ -883,6 +1107,340 @@ impl App {
             if let Some(worker) = &self.worker {
                 worker.send(Command::SignOut);
             }
+        }
+        if open_settings {
+            self.open_settings();
+        }
+    }
+
+    // ----- settings --------------------------------------------------------
+
+    fn open_settings(&mut self) {
+        self.settings_dir = self
+            .settings
+            .download_dir
+            .as_ref()
+            .map(|dir| dir.display().to_string())
+            .unwrap_or_default();
+        // The stored quality is a word (`4K`); the picker index is where that
+        // word sits in the shared list. `None` is the list's first entry.
+        self.settings_quality = self
+            .settings
+            .default_quality
+            .as_deref()
+            .and_then(|quality| {
+                QUALITY_CHOICES
+                    .iter()
+                    .position(|choice| choice.eq_ignore_ascii_case(quality))
+            })
+            .unwrap_or(0);
+        self.settings_error = None;
+        self.settings_open = true;
+    }
+
+    /// Save the dialog's fields: write the file, keep the in-memory copy, and
+    /// adopt the chosen quality so the detail panel's picker starts there.
+    fn save_settings(&mut self) {
+        let Some(config) = &self.config else {
+            self.settings_error =
+                Some("the settings file location is unknown on this machine".to_owned());
+            return;
+        };
+        let chosen = Settings {
+            default_quality: (self.settings_quality > 0)
+                .then(|| QUALITY_CHOICES[self.settings_quality].to_owned()),
+            download_dir: {
+                let text = self.settings_dir.trim();
+                (!text.is_empty()).then(|| std::path::PathBuf::from(text))
+            },
+        };
+        match chosen.save(&config.paths) {
+            Ok(()) => {
+                // The picker and the setting index the same list, so adopting
+                // it is moving the index across.
+                self.resolution = self.settings_quality;
+                self.settings = chosen;
+                self.settings_error = None;
+                self.settings_open = false;
+            }
+            Err(error) => self.settings_error = Some(error.to_string()),
+        }
+    }
+
+    /// The Collections view's list panel: name, count, and every operation.
+    /// An open collection is drawn as the card grid by the caller instead;
+    /// the list is where the organising happens, and the detail panel is
+    /// where assets get ticked into the groups it names.
+    fn collections_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.label(
+            egui::RichText::new("Collections")
+                .size(17.0)
+                .strong()
+                .color(theme::FG),
+        );
+        ui.label(
+            egui::RichText::new(
+                "Named groups of the assets you hold, kept beside the local library. \
+                 Open one to see its assets; tick a collection in an asset's detail panel \
+                 to put it in.",
+            )
+            .size(11.0)
+            .color(theme::FG_MUTED),
+        );
+        ui.add_space(10.0);
+
+        if self.library.is_none() {
+            // Demo mode and a failed open both end up here; the notes live in
+            // the database, so say which is missing instead of an empty list.
+            ui.label(
+                egui::RichText::new("Collections live in the local library, which is not open.")
+                    .color(theme::FG_MUTED),
+            );
+            if let Some(error) = &self.library_error {
+                ui.label(egui::RichText::new(error).size(11.0).color(theme::RED));
+            }
+            return;
+        }
+
+        if let Some(error) = &self.collections_error {
+            ui.label(egui::RichText::new(error).size(11.0).color(theme::RED));
+            ui.add_space(4.0);
+        }
+
+        ui.horizontal(|ui| {
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut self.collection_new)
+                    .hint_text("new collection name")
+                    .desired_width(220.0),
+            );
+            let submit = ui.button("Add").clicked()
+                || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+            if submit && !self.collection_new.trim().is_empty() {
+                self.create_collection();
+            }
+        });
+        ui.add_space(8.0);
+
+        let collections = self.collections.clone();
+        if collections.is_empty() {
+            ui.label(
+                egui::RichText::new("Nothing organised yet — name a collection above.")
+                    .color(theme::FG_MUTED),
+            );
+            return;
+        }
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for collection in &collections {
+                    let mut open = false;
+                    let mut start_rename = false;
+                    let mut save_rename = false;
+                    let mut cancel_rename = false;
+                    let mut arm_delete = false;
+                    let mut delete_now = false;
+
+                    if self
+                        .collection_renaming
+                        .as_ref()
+                        .is_some_and(|(id, _)| *id == collection.id)
+                    {
+                        // The rename editor replaces its row in place.
+                        ui.horizontal(|ui| {
+                            ui.add_space(10.0);
+                            if let Some((_, text)) = self.collection_renaming.as_mut() {
+                                let response =
+                                    ui.add(egui::TextEdit::singleline(text).desired_width(170.0));
+                                if response.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                {
+                                    save_rename = true;
+                                }
+                            }
+                            if ui.small_button("Save").clicked() {
+                                save_rename = true;
+                            }
+                            if ui.small_button("Cancel").clicked() {
+                                cancel_rename = true;
+                            }
+                        });
+                    } else {
+                        let armed = self.collection_delete_armed == Some(collection.id);
+                        ui.horizontal(|ui| {
+                            ui.add_space(10.0);
+                            let name = grid::ellipsize(&collection.name, 26);
+                            if selectable(ui, false, &name, Some(collection.asset_count)).clicked()
+                            {
+                                open = true;
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let response = ui
+                                        .small_button(if armed { "Sure?" } else { "\u{2715}" })
+                                        .on_hover_text(if armed {
+                                            "click again to delete the collection"
+                                        } else {
+                                            "delete this collection"
+                                        });
+                                    if response.clicked() {
+                                        if armed {
+                                            delete_now = true;
+                                        } else {
+                                            arm_delete = true;
+                                        }
+                                    }
+                                    if ui
+                                        .small_button("\u{270e}")
+                                        .on_hover_text("rename")
+                                        .clicked()
+                                    {
+                                        start_rename = true;
+                                    }
+                                },
+                            );
+                        });
+                    }
+
+                    if save_rename {
+                        self.rename_collection();
+                    }
+                    if cancel_rename {
+                        self.collection_renaming = None;
+                    }
+                    if start_rename {
+                        self.collection_renaming = Some((collection.id, collection.name.clone()));
+                        self.collection_delete_armed = None;
+                    }
+                    if arm_delete {
+                        self.collection_delete_armed = Some(collection.id);
+                    }
+                    if delete_now {
+                        self.delete_collection(collection.id);
+                    }
+                    if open {
+                        self.active_collection = Some(collection.id);
+                        self.checked.clear();
+                        self.start_search(ctx);
+                    }
+                }
+            });
+    }
+
+    /// Settings as a small modal: the two choices the README promises, and the
+    /// standard paths shown read-only so a custom download root can be put
+    /// back without hunting through this file.
+    fn settings_dialog(&mut self, ctx: &egui::Context) {
+        let mut save = false;
+        let mut cancel = false;
+        let paths = self.config.as_ref().map(|config| config.paths.clone());
+        let standard = paths
+            .as_ref()
+            .map(|paths| paths.assets_dir().display().to_string())
+            .unwrap_or_default();
+        let file = paths
+            .as_ref()
+            .map(|paths| paths.settings_file().display().to_string())
+            .unwrap_or_default();
+        let modal = egui::Modal::new(egui::Id::new("settings")).show(ctx, |ui| {
+            ui.set_width(430.0);
+            ui.label(
+                egui::RichText::new("Settings")
+                    .size(17.0)
+                    .strong()
+                    .color(theme::FG),
+            );
+            ui.label(
+                egui::RichText::new(
+                    "Saved as TOML and read again at every download — the command line \
+                     reads the same file, and a hand edit here is a hand edit there.",
+                )
+                .size(11.0)
+                .color(theme::FG_MUTED),
+            );
+
+            ui.add_space(10.0);
+            ui.label(
+                egui::RichText::new("Downloads folder")
+                    .size(12.0)
+                    .color(theme::FG_SECONDARY),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut self.settings_dir)
+                    .hint_text(&standard)
+                    .desired_width(f32::INFINITY),
+            );
+            ui.label(
+                egui::RichText::new(format!(
+                    "One directory per asset under this root. Empty means the standard \
+                     place: {standard}"
+                ))
+                .size(11.0)
+                .color(theme::FG_MUTED),
+            );
+
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new("Default quality")
+                    .size(12.0)
+                    .color(theme::FG_SECONDARY),
+            );
+            egui::ComboBox::from_id_salt("default-quality")
+                .width(160.0)
+                .selected_text(QUALITY_CHOICES[self.settings_quality])
+                .show_ui(ui, |ui| {
+                    for (index, choice) in QUALITY_CHOICES.iter().enumerate() {
+                        ui.selectable_value(&mut self.settings_quality, index, *choice);
+                    }
+                });
+            ui.label(
+                egui::RichText::new(
+                    "The quality tier the download picker starts on. Assets without a \
+                     file in the chosen tier report it instead of arriving in another one.",
+                )
+                .size(11.0)
+                .color(theme::FG_MUTED),
+            );
+
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(format!("Settings file: {file}"))
+                    .monospace()
+                    .size(10.0)
+                    .color(theme::FG_MUTED),
+            );
+
+            if let Some(error) = &self.settings_error {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(error).size(11.0).color(theme::RED));
+            }
+
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let button = egui::Button::new(
+                    egui::RichText::new("Save")
+                        .strong()
+                        .color(egui::Color32::WHITE),
+                )
+                .min_size(egui::vec2(96.0, 28.0))
+                .fill(theme::GREEN);
+                if ui.add_enabled(paths.is_some(), button).clicked() {
+                    save = true;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        });
+
+        if modal.should_close() || cancel {
+            self.settings_open = false;
+        }
+        if save {
+            self.save_settings();
         }
     }
 
@@ -1127,6 +1685,24 @@ impl App {
         let live = self.source == Source::Live;
         let local_view = self.view == View::Local;
         let owned_view = self.view == View::Purchased;
+        // Collections organise what you hold, so they are offered for local
+        // assets in any view, read once for the frame; the boxes write through
+        // to the library the moment they are ticked.
+        let is_local = self.local.contains(&id);
+        let membership: Vec<i64> = if is_local {
+            self.library
+                .as_ref()
+                .and_then(|library| library.collections_for(&AssetId::new(id.clone())).ok())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let collections_open = is_local && self.library.is_some();
+        let collections: Vec<Collection> = if collections_open {
+            self.collections.clone()
+        } else {
+            Vec::new()
+        };
         // Any view can export: the record says whether this asset's files are
         // on disk, and the export reads only those files.
         let disk = self
@@ -1279,6 +1855,37 @@ impl App {
                                 });
                             }
 
+                            if collections_open {
+                                ui.add_space(6.0);
+                                ui.label(
+                                    egui::RichText::new("COLLECTIONS")
+                                        .size(11.0)
+                                        .color(theme::FG_MUTED),
+                                );
+                                if collections.is_empty() {
+                                    ui.label(
+                                        egui::RichText::new(
+                                            "No collections yet — make them from the \
+                                             Collections view.",
+                                        )
+                                        .size(11.0)
+                                        .color(theme::FG_MUTED),
+                                    );
+                                }
+                                for collection in &collections {
+                                    let mut member = membership.contains(&collection.id);
+                                    if ui
+                                        .checkbox(
+                                            &mut member,
+                                            egui::RichText::new(&collection.name).size(12.0),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.toggle_membership(collection.id, &id);
+                                    }
+                                }
+                            }
+
                             if live && !local_view {
                                 ui.add_space(8.0);
                                 ui.hyperlink_to(
@@ -1297,9 +1904,9 @@ impl App {
                 if can_download {
                     egui::ComboBox::from_id_salt("resolution")
                         .width(112.0)
-                        .selected_text(RESOLUTIONS[self.resolution])
+                        .selected_text(QUALITY_CHOICES[self.resolution])
                         .show_ui(ui, |ui| {
-                            for (index, label) in RESOLUTIONS.iter().enumerate() {
+                            for (index, label) in QUALITY_CHOICES.iter().enumerate() {
                                 ui.selectable_value(&mut self.resolution, index, *label);
                             }
                         });
@@ -1532,6 +2139,9 @@ impl eframe::App for App {
         if self.sign_in_open {
             self.sign_in_dialog(ctx);
         }
+        if self.settings_open {
+            self.settings_dialog(ctx);
+        }
 
         egui::CentralPanel::default()
             .frame(
@@ -1546,41 +2156,101 @@ impl eframe::App for App {
                     return;
                 }
 
-                // Collections are not wired yet; the owned library needs a
-                // session to ask for.
-                let gated = self.source == Source::Live
-                    && (self.view == View::Collections
-                        || (self.view == View::Purchased && self.account.is_none()));
-                if gated {
-                    let what = self.view.label();
-                    let signed_in = self.account.is_some();
+                // Settings that could not be read is said once, plainly, and
+                // stays said until dismissed: the app runs on defaults in the
+                // meantime, and a silent default is the thing that must not
+                // happen quietly.
+                if let Some(error) = self.settings_error.clone() {
+                    if !self.settings_open {
+                        let frame = egui::Frame::new()
+                            .fill(egui::Color32::from_rgb(58, 50, 30))
+                            .stroke(egui::Stroke::new(
+                                1.0_f32,
+                                egui::Color32::from_rgb(128, 110, 62),
+                            ))
+                            .corner_radius(8.0)
+                            .inner_margin(egui::Margin::symmetric(12, 10));
+                        let mut dismiss = false;
+                        frame.show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new("Settings could not be read")
+                                    .strong()
+                                    .color(theme::FG),
+                            );
+                            ui.label(
+                                egui::RichText::new(&error)
+                                    .size(11.0)
+                                    .color(theme::FG_SECONDARY),
+                            );
+                            ui.horizontal(|ui| {
+                                if ui.button("Open settings").clicked() {
+                                    self.settings_open = true;
+                                }
+                                if ui.button("Dismiss").clicked() {
+                                    dismiss = true;
+                                }
+                            });
+                        });
+                        if dismiss {
+                            self.settings_error = None;
+                        }
+                        ui.add_space(10.0);
+                    }
+                }
+
+                // The Collections view is local: it organises the assets the
+                // library holds, so it works with no session and no network.
+                // The list is its home; opening a collection falls through to
+                // the card grid with the collection's cards loaded.
+                if self.view == View::Collections {
+                    if self.active_collection.is_none() {
+                        self.collections_panel(ui, ctx);
+                        return;
+                    }
+                    let name = self
+                        .collections
+                        .iter()
+                        .find(|collection| Some(collection.id) == self.active_collection)
+                        .map(|collection| collection.name.clone())
+                        .unwrap_or_default();
+                    ui.horizontal(|ui| {
+                        if ui.small_button("All collections").clicked() {
+                            self.active_collection = None;
+                            self.start_search(ctx);
+                        }
+                        ui.label(
+                            egui::RichText::new(grid::ellipsize(&name, 40))
+                                .strong()
+                                .color(theme::FG),
+                        );
+                    });
+                    ui.add_space(6.0);
+                }
+
+                // The owned library is Fab's own list: it needs a session to
+                // ask for.
+                if self.source == Source::Live
+                    && self.view == View::Purchased
+                    && self.account.is_none()
+                {
                     let mut open_sign_in = false;
                     ui.centered_and_justified(|ui| {
                         ui.vertical(|ui| {
                             ui.label(
-                                egui::RichText::new(if signed_in {
-                                    format!("{what} arrives with the library view")
-                                } else {
-                                    format!("{what} needs an Epic account")
-                                })
-                                .size(15.0)
-                                .color(theme::FG_SECONDARY),
+                                egui::RichText::new("Purchased needs an Epic account")
+                                    .size(15.0)
+                                    .color(theme::FG_SECONDARY),
                             );
                             ui.label(
-                                egui::RichText::new(if signed_in {
-                                    "AssetCraft will list your collections here once the \
-                                     collections client is wired."
-                                } else {
-                                    "Sign in to Epic to see the assets you own on Fab. Until then, \
-                                     demo data shows what the shell can do."
-                                })
+                                egui::RichText::new(
+                                    "Sign in to Epic to see the assets you own on Fab. Until \
+                                     then, demo data shows what the shell can do.",
+                                )
                                 .size(12.0)
                                 .color(theme::FG_MUTED),
                             );
-                            if !signed_in {
-                                ui.add_space(6.0);
-                            }
-                            if !signed_in && ui.button("Sign in to Epic").clicked() {
+                            ui.add_space(6.0);
+                            if ui.button("Sign in to Epic").clicked() {
                                 open_sign_in = true;
                             }
                         });
@@ -1599,6 +2269,10 @@ impl eframe::App for App {
                 if hits.is_empty() {
                     let text = match self.view {
                         View::Local => "Nothing downloaded yet. Assets you acquire land here.",
+                        View::Collections => {
+                            "This collection is empty. Tick a collection in an asset's \
+                             detail panel to fill it."
+                        }
                         View::Purchased => "Your Epic library is empty.",
                         _ if self.cards.is_empty() => "The catalog returned no listings.",
                         _ => "Nothing matches this view, search, and filters.",
@@ -1745,6 +2419,24 @@ fn local_cards(library: &Library) -> assetcraft_core::Result<Vec<Card>> {
         .collect();
     cards.sort_by_key(|card| card.title.to_lowercase());
     Ok(cards)
+}
+
+/// One collection's cards: the local library's cards restricted to its
+/// members, in the membership's own title order — a collection reads like
+/// the Local view it is drawn from. Members whose metadata row is gone
+/// (a dropped row) leave a gap rather than an error: the files may still be
+/// on disk, but there is no card to draw without a title.
+fn collection_cards(library: &Library, id: i64) -> assetcraft_core::Result<Vec<Card>> {
+    let owned: HashMap<String, Card> = local_cards(library)?
+        .into_iter()
+        .map(|card| (card.id.clone(), card))
+        .collect();
+    Ok(library
+        .collection_members(id)?
+        .iter()
+        .filter_map(|member| owned.get(member))
+        .cloned()
+        .collect())
 }
 
 /// `2026-02-14T09:30:00.000Z` -> `2026-02-14`, leaving anything unexpected alone.

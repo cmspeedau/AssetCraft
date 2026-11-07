@@ -415,6 +415,48 @@ later `assetcraft library` sync (which is `INSERT OR IGNORE`) never overwrites
 where a download landed, and a download can be tracked even before the item's
 metadata has been synced.
 
+### Favourites and collections (implemented, M5)
+
+```
+assetcraft-gui  heart              favourite / unfavourite
+assetcraft-gui  Collections view   create / rename / delete collection
+assetcraft-gui  detail panel       add to / remove from collection
+        │
+        ▼
+favorites(asset_id)                                   the set of hearts
+collections(id, name UNIQUE COLLATE NOCASE)           the names the user chose
+collection_items(collection_id → collections ON DELETE CASCADE,
+                 asset_id)                            the membership relation
+```
+
+These are the user's own organisation, kept beside the index they organise —
+local state like download records: never Fab-sourced, never rebuilt by a sync,
+and cleared by `Library::remove` along with the asset they describe. Names are
+unique case-insensitively because two panels differing only in capitalisation
+would defeat the point of organising. Membership is editable from the detail
+panel rather than by drag-and-drop: a checkbox row against every collection
+scales to a touch of keyboardless mouse work and needs no selection model, and
+the list of collections is read once per detail frame.
+
+### Settings (implemented, M5)
+
+```
+assetcraft-gui  Settings dialog  ──▶  settings.toml  ◀──  hand edits
+        │                             (config_dir, TOML)          │
+        └───── worker re-reads per download ◀─────────────────────┘
+assetcraft download  reads it too: download_dir slots under
+                     --output and the library record,
+                     default_quality under --quality
+```
+
+Two fields, each with a live consumer on both binaries; no more keys than that
+until something reads them. A missing file is the defaults (a user who chose
+nothing chose them); a file that cannot be parsed is an error naming itself and
+saying to fix or delete it, because defaulting around a typo would quietly undo
+the choices the user did make. The app reads the quality at startup to seed its
+resolution picker and the download worker re-reads the file per download, so
+hand edits land without either program being restarted or notified.
+
 ## Decisions
 
 ### We own the catalog client rather than wrapping `egs-api`

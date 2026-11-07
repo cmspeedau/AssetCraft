@@ -802,7 +802,7 @@ async fn structure(config: &Config, args: StructureArgs) -> Result<()> {
 /// The sizes come from the files themselves, so the offline answer carries the
 /// same detail as the manifest one.
 fn structure_on_disk(root: &Path) -> Result<AssetStructure> {
-    let files = collect_files(root)
+    let files = assetcraft_dcc_blender::collect_files(root)
         .with_context(|| format!("could not read the files under {}", root.display()))?;
     if files.is_empty() {
         bail!("no files found under {}", root.display());
@@ -1084,8 +1084,8 @@ fn export_asset(config: &Config, args: ExportArgs) -> Result<()> {
         .or_else(|| recorded.map(|d| d.format).filter(|f| !f.is_empty()))
         .unwrap_or_else(|| "asset".to_string());
 
-    let files =
-        collect_files(&source).with_context(|| format!("could not read {}", source.display()))?;
+    let files = assetcraft_dcc_blender::collect_files(&source)
+        .with_context(|| format!("could not read {}", source.display()))?;
     if files.is_empty() {
         anyhow::bail!("{} holds no files to export", source.display());
     }
@@ -1122,25 +1122,6 @@ fn export_asset(config: &Config, args: ExportArgs) -> Result<()> {
         );
     }
     Ok(())
-}
-
-/// Every file under `root`, as paths relative to it, sorted for a stable plan.
-fn collect_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if entry.file_type()?.is_dir() {
-                stack.push(path);
-            } else if let Ok(relative) = path.strip_prefix(root) {
-                files.push(relative.to_path_buf());
-            }
-        }
-    }
-    files.sort();
-    Ok(files)
 }
 
 fn print_manifest(manifest: &Manifest, show_chunks: bool) {

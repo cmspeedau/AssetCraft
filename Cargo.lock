@@ -402,6 +402,7 @@ dependencies = [
  "assetcraft-auth",
  "assetcraft-catalog",
  "assetcraft-core",
+ "assetcraft-dcc-blender",
  "assetcraft-library",
  "assetcraft-transfer",
  "chrono",
@@ -409,6 +410,7 @@ dependencies = [
  "egui",
  "image",
  "reqwest",
+ "tempfile",
  "tokio",
 ]
 

@@ -359,6 +359,37 @@ tests then run its script against a stub `bpy` and assert it did exactly what
 the manifest promised — same meshes, same importers, same materials, maps
 loaded from the paths the manifest named. The CI `addon` job chains the two.
 
+### Exporting from the app (implemented, M5)
+
+```
+detail panel, asset with a library download record
+        │   Command::ExportBlender { id }            (background worker)
+        ▼
+Library::download(id)                 the recorded source dir and format —
+        │                             the same record the CLI's export reads
+dcc::collect_files + plan             <data>/exports/<id>/<format>, the same
+        │                             sorted relative listing the CLI builds
+dcc::export (run: false)              files, script, manifest — offline,
+        │                             on a blocking thread, no network types
+        ▼
+blender_addon                         finds the export by its manifest; the
+                                      default library root is this directory
+```
+
+One flow, two front doors: the CLI's `export` and the app's **Export to Blender**
+button differ only in who clicks. The file listing (`collect_files`) moved into
+the adapter crate so both build plans from the identical sorted input, and the
+worker runs the whole thing with the network off — the M3 promise, now
+reachable from the GUI as well as the terminal. The export root is
+`Paths::exports_dir()`, and the addon defaults its browsed root to the same
+directory (see the decision below), so nothing on either side needs configuring.
+
+The app deliberately does not launch Blender. `--background` (the CLI's
+`--run`) starts a throwaway instance that cannot touch the scene the user is
+working in, and an interactive launch would block the worker for the lifetime
+of the editor. Writing the export and letting the addon bring it into the open
+scene is the hand-off that actually needs no terminal.
+
 ### Library download tracking (implemented, M3)
 
 ```
@@ -560,6 +591,25 @@ bpy-free so the manifest contract is testable (and CI-tested) without a Blender
 to test against. The manifest is written last, after files and script, so a
 half-written export never announces itself to the panel; a manifest whose
 version the addon does not recognise is skipped rather than guessed at.
+
+### The export root is a cross-language contract, tested on both sides
+
+An export the app writes has to be findable by the addon without either
+program talking to the other or the user copying a path — so they share one
+location, computed twice: by Rust's `directories` (`Paths::exports_dir()`,
+under the project's platform data directory) and by a Python function in the
+bpy-free `exports.py` that mirrors `directories`' rules for the project
+identity `dev.AssetCraft.AssetCraft`. Those rules are not as obvious as they
+sound — Linux lower-cases the application name, macOS uses the dotted bundle
+identifier, Windows nests organisation and application under a `data`
+segment — so the agreement is pinned by a matching pair of tests: the Rust one
+asserts the trailing segments `directories` resolves to, the Python one the
+segments the mirror produces per platform. Change either side and the two
+start disagreeing loudly.
+
+The addon's preference still overrides the default: pointing it at some other
+export root (a CLI `--target`, an external drive, a synced folder) is the
+supported way to browse exports the app did not write.
 
 ### The library stores an item as JSON, with one denormalised column
 

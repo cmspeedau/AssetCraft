@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 # Import `exports` the way a test of a bpy-free module must: directly, with no
 # Blender and no package import (importing the package would need `bpy`).
@@ -207,6 +208,67 @@ class DiscoverTest(unittest.TestCase):
         # With the real bound the same tree is found; the walk gave up, it
         # did not miss it for another reason.
         self.assertEqual([e.asset for e in exports.discover(library.root)], ["a-1"])
+
+
+class DefaultLibraryRootTest(unittest.TestCase):
+    """The default export library must be where the app writes.
+
+    The Rust side resolves its data directory with `directories`' ProjectDirs
+    for ("dev", "AssetCraft", "AssetCraft"), and its test pins the same
+    trailing segments asserted here. Neither side can call the other, so the
+    shape is the contract: change one, and both tests start disagreeing.
+    """
+
+    def test_linux_follows_xdg_or_the_home_data_dir(self):
+        with mock.patch.object(exports.sys, "platform", "linux"), mock.patch.dict(
+            os.environ, {"XDG_DATA_HOME": "/xdg-data"}
+        ):
+            self.assertEqual(
+                exports.default_library_root(),
+                os.path.join("/xdg-data", "assetcraft", "exports"),
+            )
+        with mock.patch.object(exports.sys, "platform", "linux"), mock.patch.dict(
+            os.environ, {}, clear=True
+        ), mock.patch("os.path.expanduser", return_value="/home/u"):
+            self.assertEqual(
+                exports.default_library_root(),
+                os.path.join("/home/u", ".local", "share", "assetcraft", "exports"),
+            )
+
+    def test_macos_uses_the_bundle_identifier(self):
+        with mock.patch.object(exports.sys, "platform", "darwin"), mock.patch.dict(
+            os.environ, {}, clear=True
+        ), mock.patch("os.path.expanduser", return_value="/Users/u"):
+            self.assertEqual(
+                exports.default_library_root(),
+                os.path.join(
+                    "/Users/u",
+                    "Library",
+                    "Application Support",
+                    "dev.AssetCraft.AssetCraft",
+                    "exports",
+                ),
+            )
+
+    def test_windows_nests_organisation_application_and_data(self):
+        with mock.patch.object(exports.sys, "platform", "win32"), mock.patch.dict(
+            os.environ, {"APPDATA": r"C:\Users\u\AppData\Roaming"}
+        ):
+            self.assertEqual(
+                exports.default_library_root(),
+                os.path.join(
+                    r"C:\Users\u\AppData\Roaming",
+                    "AssetCraft",
+                    "AssetCraft",
+                    "data",
+                    "exports",
+                ),
+            )
+        # No APPDATA answers empty rather than guessing a drive.
+        with mock.patch.object(exports.sys, "platform", "win32"), mock.patch.dict(
+            os.environ, {}, clear=True
+        ):
+            self.assertEqual(exports.default_library_root(), "")
 
 
 if __name__ == "__main__":

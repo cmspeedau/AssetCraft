@@ -19,8 +19,10 @@ In Blender: **Edit ▸ Preferences ▸ Add-ons ▸ Install…**, pick the zip, a
 enable *AssetCraft*. (On Blender 4.2+ you can instead copy the
 `assetcraft_blender/` folder into Blender's add-ons directory and enable it.)
 
-Then set the addon's **Export Library** preference to the directory you laid
-exports out under — the `--target` of `assetcraft export`:
+By default the addon browses the folder the AssetCraft app writes its exports
+to, so an export made with the app's **Export to Blender** button appears with
+nothing else to configure. To browse a different export root — the `--target`
+of a CLI export, say — set the addon's **Export Library** preference to it:
 
 ```bash
 assetcraft export <asset-id> --target /path/to/exports

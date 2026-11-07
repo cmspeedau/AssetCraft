@@ -15,6 +15,7 @@ path = "src/main.rs"
 assetcraft-auth.workspace = true
 assetcraft-catalog.workspace = true
 assetcraft-core.workspace = true
+assetcraft-dcc-blender.workspace = true
 assetcraft-library.workspace = true
 assetcraft-transfer.workspace = true
 chrono.workspace = true
@@ -27,6 +28,9 @@ image = { version = "0.25", default-features = false, features = [
     "webp",
 ] }
 tokio.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

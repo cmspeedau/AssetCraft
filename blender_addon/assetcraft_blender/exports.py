@@ -10,6 +10,7 @@ is checked in CI by nobody.
 
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -21,6 +22,39 @@ MANIFEST_VERSION = 1
 # home directory costs milliseconds and gives up rather than freezing the UI.
 # Real export libraries are tens of directories, not thousands.
 MAX_WALKED_DIRECTORIES = 4000
+
+
+def default_library_root() -> str:
+    """The AssetCraft app's export directory on this machine, or "".
+
+    The app lays exports out under its platform data directory, resolved by
+    Rust's `directories` crate as `ProjectDirs::from("dev", "AssetCraft",
+    "AssetCraft")`; defaulting the addon's library root here is what makes an
+    export written in the app show up in this list with no settings touched on
+    either side. These rules mirror that crate's per-project-path behaviour:
+    Linux lower-cases the application name, macOS uses the dotted bundle
+    identifier, Windows nests organisation and application under a `data`
+    segment. A preference the user sets still wins over this.
+    """
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if not appdata:
+            return ""
+        return os.path.join(
+            appdata, "AssetCraft", "AssetCraft", "data", "exports"
+        )
+    if sys.platform == "darwin":
+        return os.path.join(
+            os.path.expanduser("~"),
+            "Library",
+            "Application Support",
+            "dev.AssetCraft.AssetCraft",
+            "exports",
+        )
+    xdg = os.environ.get("XDG_DATA_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "share"
+    )
+    return os.path.join(xdg, "assetcraft", "exports")
 
 
 @dataclass

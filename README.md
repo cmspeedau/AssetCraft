@@ -274,7 +274,7 @@ The exact file format is TBD (TOML is the working assumption).
 
 | Tool | Status |
 | --- | --- |
-| Blender | CLI export works (`assetcraft export`): standard PBR layout + generated import script + machine-readable manifest. In-editor addon (`blender_addon/`) for one-click import from the viewport sidebar. |
+| Blender | CLI export works (`assetcraft export`): standard PBR layout + generated import script + machine-readable manifest. In-editor addon (`blender_addon/`) for one-click import from the viewport sidebar. The desktop app's local library drives the same export: one **Export to Blender** button, and the addon browses the app's export folder by default. |
 | Plain folder export | Available (the layout `export` writes) |
 | Godot | Planned — next DCC (roadmap M6): glTF meshes, `StandardMaterial3D`/`ORMMaterial3D` from a packed ORM texture, generated GDScript/`.tscn`. |
 | Misty Engine | Planned (roadmap M7): glTF/OBJ meshes, Standard-shader material and prefab written into the project's `Assets/` tree with GUID-stable `.meta` sidecars. |

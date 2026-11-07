@@ -135,6 +135,12 @@ pub struct App {
     library: Option<Library>,
     local_cards: Vec<Card>,
     library_error: Option<String>,
+    /// Asset currently being exported, so its button reads as busy.
+    exporting: Option<String>,
+    /// Where each asset was last exported to, for the detail panel's row.
+    exported: HashMap<String, std::path::PathBuf>,
+    /// The last export's one-line result, shown until dismissed.
+    export_note: Option<(bool, String)>,
     owned_cards: Vec<Card>,
     owned_cursor: Option<String>,
     owned_loaded: bool,
@@ -175,6 +181,9 @@ impl Default for App {
             library: None,
             local_cards: Vec::new(),
             library_error: None,
+            exporting: None,
+            exported: HashMap::new(),
+            export_note: None,
             owned_cards: Vec::new(),
             owned_cursor: None,
             owned_loaded: false,
@@ -471,6 +480,36 @@ impl App {
                         job.status = JobStatus::Failed(error);
                     }
                 }
+                Event::Exported { id, result } => {
+                    if self.exporting.as_deref() == Some(id.as_str()) {
+                        self.exporting = None;
+                    }
+                    match *result {
+                        Ok(summary) => {
+                            let next = if summary.blender_found {
+                                "Open Blender and pick it in the AssetCraft sidebar."
+                            } else {
+                                "Blender was not found on this machine; the export is \
+                                 complete either way, and the addon brings it in once \
+                                 Blender is set up."
+                            };
+                            self.export_note = Some((
+                                true,
+                                format!(
+                                    "Exported {} files as {} material(s) to {} - {}",
+                                    summary.copied,
+                                    summary.materials,
+                                    summary.dir.display(),
+                                    next
+                                ),
+                            ));
+                            self.exported.insert(id, summary.dir);
+                        }
+                        Err(error) => {
+                            self.export_note = Some((false, format!("The export failed: {error}")));
+                        }
+                    }
+                }
                 Event::Session(account) => {
                     self.account = account;
                     // The view may have opened before the session landed.
@@ -619,6 +658,21 @@ impl App {
         if !self.checked.remove(id) {
             self.checked.insert(id.to_owned());
         }
+    }
+
+    /// Lay a downloaded asset out for Blender. The worker reads the files the
+    /// library recorded and writes the export; nothing is fetched.
+    pub fn start_export(&mut self, id: &str) {
+        if self.exporting.is_some() {
+            return;
+        }
+        let Some(worker) = &self.worker else {
+            self.export_note = Some((false, "The background worker is not running.".to_owned()));
+            return;
+        };
+        worker.send(Command::ExportBlender { id: id.to_owned() });
+        self.exporting = Some(id.to_owned());
+        self.export_note = None;
     }
 
     /// Downloads need an Epic session, which lands with the library milestone,
@@ -1073,14 +1127,15 @@ impl App {
         let live = self.source == Source::Live;
         let local_view = self.view == View::Local;
         let owned_view = self.view == View::Purchased;
-        let on_disk = if local_view {
-            self.library
-                .as_ref()
-                .and_then(|library| library.download(&AssetId::new(id.clone())).ok().flatten())
-                .map(|download| download.path.display().to_string())
-        } else {
-            None
-        };
+        // Any view can export: the record says whether this asset's files are
+        // on disk, and the export reads only those files.
+        let disk = self
+            .library
+            .as_ref()
+            .and_then(|library| library.download(&AssetId::new(id.clone())).ok().flatten());
+        let on_disk = disk
+            .as_ref()
+            .map(|download| download.path.display().to_string());
         let demo_note = "Offline demo listing: the marketplace catalog is not \
                          connected in demo mode.";
 
@@ -1158,6 +1213,9 @@ impl App {
                             if let Some(path) = &on_disk {
                                 rows.push(("On disk", path.clone()));
                             }
+                            if let Some(path) = self.exported.get(&id) {
+                                rows.push(("Exported", path.display().to_string()));
+                            }
                             for (key, value) in rows {
                                 ui.horizontal(|ui| {
                                     ui.label(
@@ -1171,7 +1229,7 @@ impl App {
                                                     .size(12.0)
                                                     .color(theme::FG_SECONDARY),
                                             );
-                                            if key == "On disk" {
+                                            if matches!(key, "On disk" | "Exported") {
                                                 response.on_hover_text(&value);
                                             }
                                         },
@@ -1267,6 +1325,38 @@ impl App {
                 } else if response.clicked() {
                     self.start_download(i);
                 }
+
+                if disk.is_some() {
+                    let busy = self.exporting.as_deref() == Some(id.as_str());
+                    let button = egui::Button::new(
+                        egui::RichText::new(if busy {
+                            "Exporting..."
+                        } else {
+                            "Export to Blender"
+                        })
+                        .strong()
+                        .color(egui::Color32::WHITE),
+                    )
+                    .min_size(egui::vec2(148.0, 30.0))
+                    .fill(if busy {
+                        theme::BLUE.gamma_multiply(0.6)
+                    } else {
+                        theme::BLUE
+                    });
+                    let response = ui.add_enabled(!busy, button);
+                    let clicked = response.clicked();
+                    if busy {
+                        response.on_disabled_hover_text("Writing the export...");
+                    } else {
+                        response.on_hover_text(
+                            "Lay the downloaded files out for Blender and write the import \
+                             script. The files come from disk; nothing is fetched.",
+                        );
+                    }
+                    if clicked {
+                        self.start_export(&id);
+                    }
+                }
             });
         });
     }
@@ -1309,6 +1399,51 @@ impl App {
         if !dismiss.is_empty() {
             self.jobs.retain(|job| !dismiss.contains(&job.id));
         }
+    }
+
+    /// The one-line result of the last export, kept until dismissed.
+    fn export_banner(&mut self, ui: &mut egui::Ui) {
+        let Some((ok, message)) = self.export_note.clone() else {
+            return;
+        };
+        let (fill, edge, accent) = if ok {
+            (
+                egui::Color32::from_rgb(36, 48, 30),
+                egui::Color32::from_rgb(86, 118, 64),
+                theme::GREEN,
+            )
+        } else {
+            (
+                egui::Color32::from_rgb(58, 34, 34),
+                egui::Color32::from_rgb(128, 62, 62),
+                theme::RED,
+            )
+        };
+        let mut dismiss = false;
+        let frame = egui::Frame::new()
+            .fill(fill)
+            .stroke(egui::Stroke::new(1.0_f32, edge))
+            .corner_radius(8.0)
+            .inner_margin(egui::Margin::symmetric(12, 10));
+        frame.show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(message)
+                        .size(12.0)
+                        .color(accent)
+                        .strong(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("\u{2715}").clicked() {
+                        dismiss = true;
+                    }
+                });
+            });
+        });
+        if dismiss {
+            self.export_note = None;
+        }
+        ui.add_space(10.0);
     }
 
     /// The banner shown when the catalog could not be reached.
@@ -1405,6 +1540,7 @@ impl eframe::App for App {
                     .inner_margin(egui::Margin::same(14)),
             )
             .show(ctx, |ui| {
+                self.export_banner(ui);
                 self.error_banner(ui, ctx);
                 if self.error.is_some() && self.cards.is_empty() {
                     return;

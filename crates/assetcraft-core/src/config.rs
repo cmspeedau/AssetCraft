@@ -83,6 +83,16 @@ impl Paths {
     pub fn asset_dir(&self, asset_id: &str) -> PathBuf {
         self.assets_dir().join(asset_id)
     }
+
+    /// Where DCC exports are laid out, one `<asset id>/<format>` directory per
+    /// export under this root.
+    ///
+    /// This is the standard export root: the app writes there, and the Blender
+    /// addon browses there, which is what lets an export made in the app show up
+    /// in the addon's list without the user pointing anything at anything.
+    pub fn exports_dir(&self) -> PathBuf {
+        self.data_dir.join("exports")
+    }
 }
 
 /// Everything needed to talk to the outside world and to store local state.
@@ -173,6 +183,10 @@ mod tests {
         assert_eq!(
             paths.asset_dir("rock-1"),
             PathBuf::from("/tmp/assetcraft-test/data/assets/rock-1")
+        );
+        assert_eq!(
+            paths.exports_dir(),
+            PathBuf::from("/tmp/assetcraft-test/data/exports")
         );
     }
 

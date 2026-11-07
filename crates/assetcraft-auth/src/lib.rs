@@ -4,14 +4,16 @@
 //! provides:
 //!
 //! - [`EpicToken`], the credential the rest of the app carries,
-//! - [`TokenStore`] with a private, file-backed default ([`FileTokenStore`]),
+//! - [`TokenStore`] with a default ([`DefaultTokenStore`]) that prefers the
+//!   OS keyring and falls back to a private file ([`FileTokenStore`]) where
+//!   no keyring is usable (CI, containers, headless Linux),
 //! - [`EpicAuth`], which exchanges an authorization code for a token and
 //!   refreshes it,
 //! - [`ensure_fresh_token`], which loads the stored token and refreshes it when
 //!   it is close to expiring.
 //!
-//! An OS keyring backend is planned; see `docs/architecture.md` for why the file
-//! backend ships first.
+//! See `docs/architecture.md` for how the keyring preference and its fallback
+//! are decided.
 //!
 //! > **Note on secrets.** The client credentials below are Epic's public
 //! > *launcher* credentials, embedded in every Epic Games Launcher install.
@@ -29,5 +31,5 @@ pub mod token;
 
 pub use epic::{EpicAuth, LAUNCHER_CLIENT_ID};
 pub use session::ensure_fresh_token;
-pub use store::{FileTokenStore, TokenStore};
+pub use store::{DefaultTokenStore, FileTokenStore, TokenStore, KEYRING_ACCOUNT, KEYRING_SERVICE};
 pub use token::EpicToken;

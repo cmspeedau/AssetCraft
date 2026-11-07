@@ -23,6 +23,9 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 directories = "6"
 flate2 = "1"
+# The platform credential store: Keychain on macOS, Credential Manager on
+# Windows, the D-Bus secret service on Linux (zbus, so no system build deps).
+keyring = "4"
 # TLS comes from the system OpenSSL via native-tls. reqwest 0.13's default
 # (rustls + aws-lc-rs) needs cmake, which is not guaranteed to be installed.
 reqwest = { version = "0.13", default-features = false, features = [

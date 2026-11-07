@@ -40,8 +40,6 @@ jobs:
   addon:
     name: Blender addon
     runs-on: ubuntu-latest
-    env:
-      ASSETCRAFT_ADDON_FIXTURE: ${{ runner.temp }}/addon-fixture
     steps:
       - uses: actions/checkout@v5
 
@@ -51,8 +49,14 @@ jobs:
       - name: Cache
         uses: Swatinem/rust-cache@v2
 
+      # `runner.temp` is only available at step level, which is fine: these
+      # two steps are the whole conversation about where the fixture lives.
       - name: Build an export with the Rust exporter
+        env:
+          ASSETCRAFT_ADDON_FIXTURE: ${{ runner.temp }}/addon-fixture
         run: cargo test -p assetcraft-dcc-blender --test addon_fixture
 
       - name: Run it through the addon's Python tests
+        env:
+          ASSETCRAFT_ADDON_FIXTURE: ${{ runner.temp }}/addon-fixture
         run: python3 -m unittest discover -s blender_addon/tests -v

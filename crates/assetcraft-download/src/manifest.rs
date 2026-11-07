@@ -14,11 +14,13 @@
 //! itself. That fixture was cross-checked field by field against `legendary`'s
 //! reader, which agrees on every value.
 //!
-//! **It has not been validated against a manifest from a real Fab account.**
-//! The shape is documented and internally consistent, but a field whose meaning
-//! Fab changed could still surprise us; treat a first run against a real
-//! manifest as a validation step. Encrypted manifests (`stored_as & 0x2`, used
-//! by some newer builds) are rejected with a clear error rather than guessed at.
+//! **It has been validated against real Fab answers.** `tests/real_fab.rs`
+//! parses a manifest captured from the live API — 667 files, 6914 chunks, a
+//! feature level (21) newer than the fixture's — decodes a real chunk from
+//! the CDN, and proves the two agree: the bytes the manifest's part points
+//! at, inside that chunk, hash to the manifest's own file hash. Encrypted
+//! manifests (`stored_as & 0x2`, used by some newer builds) are rejected
+//! with a clear error rather than guessed at.
 //!
 //! Reading a manifest resolves an asset into *what to fetch*: [`Manifest::chunks`]
 //! gives the blobs to download and [`ChunkInfo::relative_path`] their path under
@@ -194,13 +196,21 @@ impl Manifest {
     ///
     /// The base URL comes from the distribution point Fab returns; this method
     /// only joins it with each chunk's documented relative path.
-    pub fn chunk_downloads(&self, base_url: &str) -> Vec<ChunkDownload> {
+    ///
+    /// `signed_query` is the manifest URL's query string (leading `?` and
+    /// all), or empty. The CDN signs the whole `CloudDir/` tree with that
+    /// one token, so a chunk fetched without it answers 403 — the signature
+    /// covers every file in the tree, not just the manifest.
+    pub fn chunk_downloads(&self, base_url: &str, signed_query: &str) -> Vec<ChunkDownload> {
         let base = base_url.trim_end_matches('/');
         self.chunks
             .iter()
             .map(|chunk| ChunkDownload {
                 guid: chunk.guid_string(),
-                url: format!("{base}/{}", chunk.relative_path(self.meta.feature_level)),
+                url: format!(
+                    "{base}/{}{signed_query}",
+                    chunk.relative_path(self.meta.feature_level)
+                ),
                 size_bytes: chunk.file_size.max(0) as u64,
                 sha1: chunk.sha_hash,
             })
@@ -930,11 +940,11 @@ pub(crate) mod tests {
             "ChunksV4/07/1122334455667788_00000001000000020000000300000004.chunk"
         );
 
-        let downloads = manifest.chunk_downloads("https://cdn.example.com/build/");
+        let downloads = manifest.chunk_downloads("https://cdn.example.com/build/", "?sign=abc");
         assert_eq!(downloads.len(), 1);
         assert_eq!(
             downloads[0].url,
-            "https://cdn.example.com/build/ChunksV4/07/1122334455667788_00000001000000020000000300000004.chunk"
+            "https://cdn.example.com/build/ChunksV4/07/1122334455667788_00000001000000020000000300000004.chunk?sign=abc"
         );
         assert_eq!(downloads[0].size_bytes, 300);
         assert_eq!(downloads[0].sha1, [0xAB; 20]);

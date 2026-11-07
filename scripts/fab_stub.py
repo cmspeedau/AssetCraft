@@ -6,10 +6,12 @@ against fab.com from a dev box or CI. This stub speaks the same wire shape
 (see crates/assetcraft-catalog/src/wire.rs) and generates thumbnails, so the
 client, worker, paging, and image pipeline can all be tested end to end.
 
-Downloads are served too: `asset-formats` and `download-info` describe one FBX
-file, and `/stub/manifest.bin` is a real binary manifest whose two chunks are
-served under `/stub/ChunksV4/`. Both are generated here, so the whole transfer
-path — resolve, fetch, reassemble, verify — runs without a network.
+Downloads are served the way Fab really serves them: the owned library answers
+with `projectVersions[].artifactId`, `POST /e/artifacts/{artifact}/manifest`
+returns download info carrying the manifest's SHA-1, and `/stub/manifest.bin`
+is a real binary manifest whose chunks are served under `/stub/ChunksV4/`.
+All of it is generated here, so the whole transfer path — library lookup,
+artifact resolve, fetch, reassemble, verify — runs without a network.
 
     pip install pillow
     python3 scripts/fab_stub.py 8791
@@ -150,6 +152,18 @@ def owned_item(listing):
         "distributionMethod": "download",
         "categories": [{"name": TYPE_LABELS.get(listing["listingType"], "Asset")}],
         "images": [{"url": f"{BASE}/img/{n}.png", "type": "thumbnail"}],
+        # The live library names the deliverable build here; an entry
+        # without an artifactId has no download route, exactly as live.
+        "projectVersions": [
+            {
+                "artifactId": f"StubAsset{n}V1",
+                "engineVersions": ["UE_5.4"],
+                "targetPlatforms": ["Windows"],
+                "buildVersions": [
+                    {"buildVersion": "1.0", "platform": "Windows"}
+                ],
+            }
+        ],
     }
 
 
@@ -405,22 +419,6 @@ class Handler(BaseHTTPRequestHandler):
             self.reply_json([format_body()])
             return
 
-        match = re.fullmatch(
-            r"/p/egl/listings/[\w-]+/asset-formats/[\w-]+/files/[\w-]+/download-info",
-            url.path,
-        )
-        if match:
-            self.reply_json(
-                {
-                    "artifactId": "stub-artifact",
-                    "assetFormat": "fbx",
-                    "distributionPoints": [
-                        {"manifestUrl": f"{BASE}/stub/manifest.bin"}
-                    ],
-                }
-            )
-            return
-
         if url.path == "/stub/manifest.bin":
             self.reply_bytes(MANIFEST, "application/octet-stream")
             return
@@ -493,6 +491,45 @@ class Handler(BaseHTTPRequestHandler):
                     },
                     status=400,
                 )
+            return
+
+        # The artifact manifest: the only download route the live API offers
+        # third parties. The real endpoint insists item_id is a bare 32-hex
+        # id; the stub is friendlier (its owned ids are not hex) but still
+        # refuses an empty one, and still sends the manifest's SHA-1 so the
+        # client's hash check is exercised.
+        match = re.fullmatch(r"/e/artifacts/([\w-]+)/manifest", url.path)
+        if match:
+            try:
+                request = json.loads(body or "{}")
+            except json.JSONDecodeError:
+                request = {}
+            if not request.get("item_id"):
+                self.reply_json(
+                    {"detail": {"item_id": ["UUID4 in hex format"]}}, status=400
+                )
+                return
+            self.reply_json(
+                {
+                    "downloadInfo": [
+                        {
+                            "type": "manifest",
+                            "assetFormat": "asset-format/game-engine/unreal-engine",
+                            "artifactId": match.group(1),
+                            "buildVersion": "1.0",
+                            "manifestHash": hashlib.sha1(MANIFEST).hexdigest().upper(),
+                            "metadata": {},
+                            "distributionPoints": [
+                                {
+                                    "manifestUrl": f"{BASE}/stub/manifest.bin",
+                                    "signatureExpiration": "2030-01-01T00:00:00.000Z",
+                                }
+                            ],
+                            "distributionPointBaseUrls": [f"{BASE}/stub"],
+                        }
+                    ]
+                }
+            )
             return
 
         self.send_error(404)

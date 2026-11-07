@@ -894,8 +894,9 @@ impl App {
                 self.error = Some("The catalog worker is not running.".to_owned());
                 return;
             };
-            // What the download records, so the local view can show it without
-            // a marketplace round trip.
+            // A stand-in carrying what the card knows: the worker joins it
+            // to the account's real library entry, and records that entry,
+            // not this one.
             let item = assetcraft_core::LibraryItem {
                 asset_id: id.clone(),
                 namespace: "fab".to_owned(),
@@ -904,6 +905,7 @@ impl App {
                 url: None,
                 source: Some("fab".to_owned()),
                 distribution_method: Some("download".to_owned()),
+                artifact_id: None,
                 categories: card
                     .listing_type
                     .iter()
@@ -922,11 +924,11 @@ impl App {
                     })
                     .collect(),
             };
-            // The resolution picker chooses the files: a quality is matched
-            // against file names exactly like the CLI's `--quality`, so an
-            // asset that does not carry the chosen tier fails with the named
-            // criteria rather than quietly arriving in another one. The first
-            // picker entry sends no preference, as before.
+            // The download follows the account's library to the artifact
+            // Fab delivers, so the resolution picker travels with it but
+            // decides nothing: an artifact is the one build, not a set of
+            // files to choose between. The preference rides along for the
+            // day Fab serves more of the library to bearer tokens.
             worker.send(Command::Download {
                 item,
                 quality: (self.resolution > 0).then(|| QUALITY_CHOICES[self.resolution].to_owned()),

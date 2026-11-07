@@ -11,8 +11,7 @@ use std::time::Duration;
 use assetcraft_auth::{ensure_fresh_token, DefaultTokenStore, EpicAuth, EpicToken, TokenStore};
 use assetcraft_catalog::FabClient;
 use assetcraft_core::{
-    AssetDetail, AssetId, AssetSummary, Config, LibraryItem, Page, SearchQuery, SelectionCriteria,
-    Settings,
+    AssetDetail, AssetId, AssetSummary, Config, LibraryItem, Page, SearchQuery, Settings,
 };
 use assetcraft_library::{Library, MediaCache};
 use tokio::sync::{mpsc, Semaphore};
@@ -77,11 +76,14 @@ pub enum Command {
     SignIn { code: String },
     /// Forget the stored token.
     SignOut,
-    /// Fetch an asset's files and record them in the library.
+    /// Download an owned asset's Unreal build and record it in the library.
     Download {
-        /// The record written once the files land.
+        /// The card asked for; its id joins to the account's library entry,
+        /// and the *entry* — not this stand-in — is what gets recorded.
         item: LibraryItem,
-        /// Resolution token from the detail panel, e.g. `4K`.
+        /// Resolution token from the detail panel, e.g. `4K`. Unused: an
+        /// artifact is the one build Fab delivers, with no files to pick
+        /// between; the picker stays for the formats Fab serves at home.
         quality: Option<String>,
     },
     /// Lay a downloaded asset out for Blender under the export root.
@@ -354,24 +356,62 @@ async fn run(
             }
             Command::Download { item, quality } => {
                 let client = client.clone();
+                let store = store.clone();
                 let events = events.clone();
                 let ctx = ctx.clone();
                 let config = config.clone();
                 let id = item.asset_id.clone();
+                // An artifact is the one build Fab chose to deliver; the
+                // resolution picker has no files left to choose between.
+                let _ = quality;
                 tokio::spawn(async move {
+                    // Fab delivers the Unreal build of an *owned* asset and
+                    // nothing else, and only the account's library — keyed
+                    // by the account id only the stored session carries —
+                    // knows that build's artifact. The card carries a
+                    // listing UUID and the library entry a hex uid;
+                    // `owned_for` joins the two and says plainly when the
+                    // asset is not owned at all.
+                    let account_id = store
+                        .load()
+                        .ok()
+                        .flatten()
+                        .and_then(|token| token.account_id);
+                    let found = match &account_id {
+                        Some(account_id) => {
+                            Some(assetcraft_transfer::owned_for(&client, account_id, &id).await)
+                        }
+                        None => None,
+                    };
+                    let (entry, owned) = match found {
+                        Some(Ok(found)) => found,
+                        Some(Err(error)) => {
+                            let _ = events.send(Event::DownloadFailed {
+                                id,
+                                error: friendly(&format!("{error:#}")),
+                            });
+                            ctx.request_repaint();
+                            return;
+                        }
+                        None => {
+                            let _ = events.send(Event::DownloadFailed {
+                                id,
+                                error: "Sign in again: the stored session has no account id."
+                                    .to_owned(),
+                            });
+                            ctx.request_repaint();
+                            return;
+                        }
+                    };
                     // Where the files land is the user's choice, read at the
                     // point of use; a settings file too broken to read falls
                     // back to the standard directory, and the app has already
                     // said so in its banner.
                     let settings = Settings::load(&config.paths).unwrap_or_default();
                     let request = assetcraft_transfer::Request {
-                        asset_id: id.clone(),
-                        output: settings.asset_dir_for(&config.paths, &id),
+                        owned: owned.clone(),
+                        output: settings.asset_dir_for(&config.paths, &owned.item_id),
                         chunk_base: std::env::var("ASSETCRAFT_CHUNK_BASE").ok(),
-                        criteria: SelectionCriteria {
-                            quality,
-                            ..Default::default()
-                        },
                         options: Default::default(),
                     };
 
@@ -389,13 +429,18 @@ async fn run(
 
                     match result {
                         Ok(acquired) => {
+                            // The real library entry is recorded — not the
+                            // card-shaped stand-in — and the download is
+                            // keyed by the hex asset id, which is what
+                            // `assetcraft download <id>` and the exporters
+                            // look a recorded path up by.
                             let recorded = Library::open(config.paths.library_file())
                                 .map_err(|error| error.to_string())
                                 .and_then(|library| {
-                                    library.insert(&item).map_err(|error| error.to_string())?;
+                                    library.insert(&entry).map_err(|error| error.to_string())?;
                                     library
                                         .record_download(
-                                            &AssetId::new(&id),
+                                            &AssetId::new(&owned.item_id),
                                             &acquired.path,
                                             &acquired.format,
                                         )

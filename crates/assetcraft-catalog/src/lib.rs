@@ -15,8 +15,17 @@
 //! | tag groups | `GET /i/tags/groups` | no |
 //! | CSRF handshake | `GET /i/csrf` | yes |
 //! | owned library | `GET /e/accounts/{account_id}/ue/library` | yes |
-//! | file download info | `GET /p/egl/listings/{id}/asset-formats/{fmt}/files/{f}/download-info` | yes |
 //! | artifact manifest | `POST /e/artifacts/{artifact_id}/manifest` | yes |
+//!
+//! The artifact manifest is the *only* download route Fab offers third
+//! parties, and only for the Unreal builds of owned assets: library entries
+//! carry `projectVersions[].artifactId`, and the response's signed
+//! distribution points describe the chunk blobs behind them. Other formats
+//! (uefn zips, glTF) are served only to a Fab web session — cookies, not a
+//! bearer token — so AssetCraft tells the user to fetch those from the Fab
+//! website. The documented `GET /p/egl/.../download-info` route is not here
+//! because the live API answers it 404 to bearer tokens, for every id and
+//! format combination we probed with a real account.
 //!
 //! Authenticated calls need a bearer token *and* a Fab CSRF cookie, which the
 //! first authenticated call establishes by handshaking against `/i/csrf`.
@@ -159,22 +168,14 @@ impl FabClient {
         Ok(convert::library_page_from_wire(library))
     }
 
-    /// Resolve where one file of one format can be downloaded from. Requires a
-    /// token.
-    pub async fn download_info(
-        &self,
-        listing_id: &str,
-        format_code: &str,
-        file_id: &str,
-    ) -> Result<DownloadInfo> {
-        let url = self.endpoint(&format!(
-            "/p/egl/listings/{listing_id}/asset-formats/{format_code}/files/{file_id}/download-info"
-        ));
-        let info: wire::DownloadInfo = self.get_json_authorized(url).await?;
-        Ok(convert::download_info_from_wire(info))
-    }
-
-    /// Request the artifact manifest for an owned item. Requires a token.
+    /// Request the artifact manifest for an owned item's Unreal build.
+    ///
+    /// `artifact_id` is `projectVersions[].artifactId` from a library entry,
+    /// and `item_id` is that entry's bare 32-hex asset id — a dashed listing
+    /// UUID is refused (`"UUID4 in hex format"`). The response's
+    /// `manifestHash` is the SHA-1 of the manifest blob the signed
+    /// distribution points serve; fetch the blob, check it, then parse it.
+    /// Requires a token.
     pub async fn asset_manifest(
         &self,
         artifact_id: &str,
@@ -615,40 +616,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn download_info_decodes_a_mocked_response() {
-        let server = MockServer::start_async().await;
-        server
-            .mock_async(|when, then| {
-                when.method(GET).path("/i/csrf");
-                then.status(200).body("{}");
-            })
-            .await;
-        server
-            .mock_async(|when, then| {
-                when.method(GET)
-                    .path("/p/egl/listings/lst-1/asset-formats/fbx/files/file-1/download-info");
-                then.status(200)
-                    .header("content-type", "application/json")
-                    .body(
-                        r#"{"artifactId": "art-1", "assetFormat": "fbx", "distributionPoints": [{"manifestUrl": "https://cdn/manifest"}]}"#,
-                    );
-            })
-            .await;
-
-        let client = client_for(&server).with_token("bearer token-abc");
-        let info = client
-            .download_info("lst-1", "fbx", "file-1")
-            .await
-            .unwrap();
-        assert_eq!(info.artifact_id, "art-1");
-        assert_eq!(info.asset_format, "fbx");
-        assert_eq!(
-            info.distribution_points[0].manifest_url,
-            "https://cdn/manifest"
-        );
-    }
-
-    #[tokio::test]
     async fn asset_manifest_posts_and_decodes() {
         let server = MockServer::start_async().await;
         server
@@ -663,7 +630,20 @@ mod tests {
                 then.status(200)
                     .header("content-type", "application/json")
                     .body(
-                        r#"{"downloadInfo": [{"artifactId": "art-1", "assetFormat": "fbx", "distributionPoints": [{"manifestUrl": "https://cdn/m"}]}]}"#,
+                        // The shape the live API answers, keys and all.
+                        r#"{"downloadInfo": [{
+                            "type": "manifest",
+                            "assetFormat": "asset-format/game-engine/unreal-engine",
+                            "artifactId": "art-1",
+                            "buildVersion": "5.6.0-37385967+++UE5+Dev-Marketplace-Windows",
+                            "manifestHash": "56773AAC1647082DB290C0373CE89D6494DC6612",
+                            "metadata": {},
+                            "distributionPoints": [{
+                                "manifestUrl": "https://cdn/CloudDir/m.manifest?sign=x",
+                                "signatureExpiration": "2026-11-07T10:28:07.552Z"
+                            }],
+                            "distributionPointBaseUrls": ["https://cdn/CloudDir"]
+                        }]}"#,
                     );
             })
             .await;
@@ -677,6 +657,18 @@ mod tests {
         manifest.assert_async().await;
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].artifact_id, "art-1");
+        assert_eq!(
+            infos[0].asset_format,
+            "asset-format/game-engine/unreal-engine"
+        );
+        assert_eq!(
+            infos[0].manifest_hash.as_deref(),
+            Some("56773AAC1647082DB290C0373CE89D6494DC6612")
+        );
+        assert_eq!(
+            infos[0].distribution_points[0].manifest_url,
+            "https://cdn/CloudDir/m.manifest?sign=x"
+        );
     }
 
     #[tokio::test]

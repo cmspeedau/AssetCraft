@@ -13,3 +13,4 @@ assetcraft-catalog.workspace = true
 assetcraft-core.workspace = true
 assetcraft-download.workspace = true
 anyhow.workspace = true
+sha1.workspace = true

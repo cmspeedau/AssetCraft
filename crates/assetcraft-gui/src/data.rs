@@ -481,6 +481,7 @@ mod tests {
             url: None,
             source: Some("fab".to_owned()),
             distribution_method: None,
+            artifact_id: None,
             categories: vec![Category {
                 name: Some("3D Models".to_owned()),
                 ..Default::default()

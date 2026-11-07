@@ -245,7 +245,7 @@ Make it a product.
       verify, and record in the library, with phase progress in the app.
 - [x] Local library view: assets on disk, read from the library database, with
       their paths in the detail panel.
-- [ ] Export to Blender from the app: the local library drives the M4 exporter —
+- [x] Export to Blender from the app: the local library drives the M4 exporter —
       lay out, write the script, hand it to Blender — closing the DoD's one
       path that exists only in the CLI today.
 - [x] Owned library view: the signed-in account's Fab library, paged.

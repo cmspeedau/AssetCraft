@@ -43,10 +43,12 @@ class AssetCraftPreferences(AddonPreferences):
     library_root: StringProperty(
         name="Export Library",
         description=(
-            "The directory AssetCraft laid exports out under (the --target "
-            "of `assetcraft export`)"
+            "The directory AssetCraft laid exports out under. Defaults to "
+            "where the AssetCraft app writes its exports; set it to use "
+            "another export root, such as the --target of `assetcraft export`"
         ),
         subtype="DIR_PATH",
+        default=exports.default_library_root(),
     )
 
 
@@ -101,7 +103,9 @@ class ASSETCRAFT_PT_exports(Panel):
     def draw(self, context):
         layout = self.layout
         preferences = context.preferences.addons[__package__].preferences
-        root = bpy.path.abspath(preferences.library_root)
+        # A saved-but-empty preference (an add-on enabled before this default
+        # existed) still browses the app's export directory, not nothing.
+        root = bpy.path.abspath(preferences.library_root) or exports.default_library_root()
         if not root or not os.path.isdir(root):
             layout.label(text="Set the export library first:", icon="INFO")
             layout.label(text="Preferences > Add-ons > AssetCraft")

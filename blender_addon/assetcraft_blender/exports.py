@@ -10,6 +10,7 @@ is checked in CI by nobody.
 
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -21,6 +22,59 @@ MANIFEST_VERSION = 1
 # home directory costs milliseconds and gives up rather than freezing the UI.
 # Real export libraries are tens of directories, not thousands.
 MAX_WALKED_DIRECTORIES = 4000
+
+
+def inside_flatpak() -> bool:
+    """Whether this Python is running inside a Flatpak sandbox.
+
+    Every sandbox has a `/.flatpak-info` file at its root — the runtime mounts
+    it there so a program can tell where it lives. It is what the export-root
+    rule below asks before trusting `XDG_DATA_HOME`.
+    """
+    return os.path.exists("/.flatpak-info")
+
+
+def default_library_root() -> str:
+    """The AssetCraft app's export directory on this machine, or "".
+
+    The app lays exports out under its platform data directory, resolved by
+    Rust's `directories` crate as `ProjectDirs::from("dev", "AssetCraft",
+    "AssetCraft")`; defaulting the addon's library root here is what makes an
+    export written in the app show up in this list with no settings touched on
+    either side. These rules mirror that crate's per-project-path behaviour:
+    Linux lower-cases the application name, macOS uses the dotted bundle
+    identifier, Windows nests organisation and application under a `data`
+    segment. A preference the user sets still wins over this.
+    """
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if not appdata:
+            return ""
+        return os.path.join(
+            appdata, "AssetCraft", "AssetCraft", "data", "exports"
+        )
+    if sys.platform == "darwin":
+        return os.path.join(
+            os.path.expanduser("~"),
+            "Library",
+            "Application Support",
+            "dev.AssetCraft.AssetCraft",
+            "exports",
+        )
+    xdg = os.environ.get("XDG_DATA_HOME")
+    if inside_flatpak():
+        # A Flatpak sandbox (Blender's on Flathub is the one that matters
+        # here) redefines XDG_DATA_HOME to a folder inside the sandbox
+        # (~/.var/app/APPID/data) — and the app, living on the host, writes
+        # where the *host* environment points instead. The sandbox mounts the
+        # filesystem as it is (Flathub's Blender grants filesystem=host), so
+        # the XDG default computed from the real home is the same folder the
+        # app used, and ignoring the sandboxed variable finds it. A host data
+        # directory the user relocated is invisible from inside the sandbox
+        # under any rule; the Export Library preference names it.
+        xdg = None
+    xdg = xdg or os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(xdg, "assetcraft", "exports")
 
 
 @dataclass

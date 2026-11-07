@@ -31,6 +31,20 @@ pub struct Account {
     pub name: String,
 }
 
+/// A finished export, as the UI reports it.
+#[derive(Clone, Debug)]
+pub struct ExportSummary {
+    /// The directory the layout was written into.
+    pub dir: std::path::PathBuf,
+    /// How many files were copied.
+    pub copied: usize,
+    /// How many materials the generated script builds.
+    pub materials: usize,
+    /// Whether Blender was found on this machine, which decides the wording of
+    /// the next step the UI suggests.
+    pub blender_found: bool,
+}
+
 impl Account {
     fn from_token(token: &EpicToken) -> Self {
         let name = token
@@ -69,6 +83,11 @@ pub enum Command {
         item: LibraryItem,
         /// Resolution token from the detail panel, e.g. `4K`.
         quality: Option<String>,
+    },
+    /// Lay a downloaded asset out for Blender under the export root.
+    ExportBlender {
+        /// The asset to export; its files come from the library record.
+        id: String,
     },
 }
 
@@ -113,6 +132,11 @@ pub enum Event {
     },
     /// A download failed; `error` is one readable line.
     DownloadFailed { id: String, error: String },
+    /// An export finished, or the one readable line about why it did not.
+    Exported {
+        id: String,
+        result: Box<Result<ExportSummary, String>>,
+    },
     /// The worker could not be set up at all; the UI should fall back to demo
     /// data.
     Fatal(String),
@@ -424,6 +448,27 @@ async fn run(
                     ctx.request_repaint();
                 });
             }
+            Command::ExportBlender { id } => {
+                let events = events.clone();
+                let ctx = ctx.clone();
+                let config = config.clone();
+                tokio::spawn(async move {
+                    // Copying a download's files is blocking disk work; keep it
+                    // off the runtime's async workers.
+                    let export_id = id.clone();
+                    let result =
+                        tokio::task::spawn_blocking(move || run_export(&config, &export_id))
+                            .await
+                            .unwrap_or_else(|_| {
+                                Err("the export thread stopped before it finished.".to_owned())
+                            });
+                    let _ = events.send(Event::Exported {
+                        id,
+                        result: Box::new(result),
+                    });
+                    ctx.request_repaint();
+                });
+            }
         }
     }
 }
@@ -439,6 +484,63 @@ async fn restore_session(auth: &EpicAuth, store: &impl TokenStore) -> Option<(Ac
         Ok(token) => Some((Account::from_token(&token), token)),
         Err(_) => Some((Account::from_token(&stored), stored)),
     }
+}
+
+/// Lay one downloaded asset out for Blender under the export root, offline.
+///
+/// This is the same flow as the CLI's `export`: the files come from the path the
+/// library recorded, the layout lands under the standard export root where the
+/// Blender addon browses, and nothing here touches the network. Blender itself is
+/// never launched from the app: a background run could not touch the user's open
+/// scene, and an interactive one would block this thread until Blender quits —
+/// the addon is the in-editor path, and it only needs the written export.
+fn run_export(config: &Config, id: &str) -> Result<ExportSummary, String> {
+    let asset = AssetId::new(id);
+    let download = Library::open(config.paths.library_file())
+        .map_err(|error| error.to_string())?
+        .download(&asset)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "this asset has no downloaded files in the library".to_owned())?;
+    if !download.path.is_dir() {
+        return Err(format!(
+            "the downloaded files are gone from {}; download the asset again",
+            download.path.display()
+        ));
+    }
+
+    let files = assetcraft_dcc_blender::collect_files(&download.path)
+        .map_err(|error| format!("could not read {}: {error}", download.path.display()))?;
+    if files.is_empty() {
+        return Err(format!(
+            "{} holds no files to export",
+            download.path.display()
+        ));
+    }
+    let format = if download.format.is_empty() {
+        "asset".to_owned()
+    } else {
+        download.format
+    };
+
+    let plan = assetcraft_dcc_blender::plan(config.paths.exports_dir(), &asset, &format, &files);
+    let report = assetcraft_dcc_blender::export(
+        &plan,
+        &download.path,
+        &assetcraft_dcc_blender::ExportOptions {
+            // Same default as the CLI: bring the meshes in and assign the
+            // material, not just the material alone.
+            import_meshes: true,
+            ..Default::default()
+        },
+    )
+    .map_err(|error| error.to_string())?;
+
+    Ok(ExportSummary {
+        dir: report.dir,
+        copied: report.copied,
+        materials: report.materials,
+        blender_found: assetcraft_dcc_blender::detect::find().is_some(),
+    })
 }
 
 /// Turn a client error into one readable line for the banner.
@@ -519,8 +621,10 @@ fn decode(bytes: &[u8]) -> Option<egui::ColorImage> {
 
 #[cfg(test)]
 mod tests {
-    use super::{friendly, Account};
+    use super::{friendly, run_export, Account};
     use assetcraft_auth::EpicToken;
+    use assetcraft_core::{AssetId, Config, LibraryItem};
+    use assetcraft_library::Library;
 
     fn token(display: Option<&str>, account: Option<&str>) -> EpicToken {
         EpicToken {
@@ -562,5 +666,100 @@ mod tests {
         assert_eq!(friendly(&long).chars().count(), 160);
         assert_eq!(friendly(""), "The catalog request failed.");
         assert_eq!(friendly("connection reset"), "connection reset");
+    }
+
+    /// A library in a temporary home, with one asset downloaded to disk.
+    fn library_with_download(dir: &std::path::Path) -> Config {
+        let config = Config::rooted_at(dir);
+        let source = config.paths.asset_dir("rock-1");
+        for relative in ["textures/T_Rock_BaseColor.png", "meshes/SM_Rock.fbx"] {
+            let path = source.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"stub").unwrap();
+        }
+        let library = Library::open(config.paths.library_file()).unwrap();
+        library
+            .insert(&LibraryItem {
+                asset_id: "rock-1".to_owned(),
+                title: "Rock".to_owned(),
+                ..Default::default()
+            })
+            .unwrap();
+        library
+            .record_download(&AssetId::new("rock-1"), &source, "gltf")
+            .unwrap();
+        config
+    }
+
+    #[test]
+    fn exporting_a_downloaded_asset_lays_it_out_under_the_export_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = library_with_download(dir.path());
+
+        let summary = run_export(&config, "rock-1").unwrap();
+
+        assert_eq!(summary.copied, 2);
+        assert_eq!(
+            summary.dir,
+            config.paths.exports_dir().join("rock-1").join("gltf")
+        );
+        // The addon discovers an export by its script and manifest sidecar.
+        assert!(summary
+            .dir
+            .join(assetcraft_dcc_blender::SCRIPT_NAME)
+            .exists());
+        assert!(summary
+            .dir
+            .join(assetcraft_dcc_blender::MANIFEST_NAME)
+            .exists());
+    }
+
+    #[test]
+    fn exporting_what_was_never_downloaded_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config::rooted_at(dir.path());
+        let error = run_export(&config, "absent").unwrap_err();
+        assert!(error.contains("no downloaded files"), "{error}");
+    }
+
+    #[test]
+    fn exporting_files_the_user_moved_away_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = library_with_download(dir.path());
+        std::fs::remove_dir_all(config.paths.asset_dir("rock-1")).unwrap();
+        let error = run_export(&config, "rock-1").unwrap_err();
+        assert!(error.contains("gone from"), "{error}");
+    }
+
+    /// The Blender addon works out where the app writes on its own, in Python
+    /// (`blender_addon/assetcraft_blender/exports.py::default_library_root`),
+    /// because it has no way to ask a running app. The two implementations can
+    /// only agree on the shape of the path, so the shape is pinned here and in
+    /// that module's tests: the same platform bases the addon uses, the same
+    /// trailing segments this side resolves to.
+    #[test]
+    fn the_app_and_the_addon_agree_on_the_default_export_root() {
+        const SUFFIX: &str = if cfg!(target_os = "windows") {
+            // %APPDATA%\AssetCraft\AssetCraft\data\exports (organisation and
+            // application both "AssetCraft", plus the `data` segment).
+            "AssetCraft/AssetCraft/data/exports"
+        } else if cfg!(target_os = "macos") {
+            // ~/Library/Application Support/dev.AssetCraft.AssetCraft/exports
+            "dev.AssetCraft.AssetCraft/exports"
+        } else {
+            // $XDG_DATA_HOME/assetcraft/exports - lower-cased project path.
+            "assetcraft/exports"
+        };
+        let config = Config::load().expect("platform directories should resolve");
+        let exports = config
+            .paths
+            .exports_dir()
+            .display()
+            .to_string()
+            .replace('\\', "/");
+        assert!(
+            exports.ends_with(SUFFIX),
+            "{exports} does not end with {SUFFIX}"
+        );
     }
 }

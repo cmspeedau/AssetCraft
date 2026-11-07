@@ -19,8 +19,20 @@ In Blender: **Edit ▸ Preferences ▸ Add-ons ▸ Install…**, pick the zip, a
 enable *AssetCraft*. (On Blender 4.2+ you can instead copy the
 `assetcraft_blender/` folder into Blender's add-ons directory and enable it.)
 
-Then set the addon's **Export Library** preference to the directory you laid
-exports out under — the `--target` of `assetcraft export`:
+Any Blender works, including the Flatpak (`org.blender.Blender`) and Snap
+packaging: *Install…* writes wherever that Blender keeps its preferences, and
+the app's export folder under your home directory is readable from the sandbox
+(Flathub's Blender shares the host filesystem). The addon knows a Flatpak
+sandbox redefines `XDG_DATA_HOME` to point inside itself, and resolves the
+app's standard export folder from the real home instead — so the default works
+there too. One thing a sandbox cannot see is a *relocated* host data
+directory: if the app's exports live outside your home directory, point the
+**Export Library** preference at them yourself.
+
+By default the addon browses the folder the AssetCraft app writes its exports
+to, so an export made with the app's **Export to Blender** button appears with
+nothing else to configure. To browse a different export root — the `--target`
+of a CLI export, say — set the addon's **Export Library** preference to it:
 
 ```bash
 assetcraft export <asset-id> --target /path/to/exports

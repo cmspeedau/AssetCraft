@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use assetcraft_core::AssetId;
+use assetcraft_core::{AssetId, Result};
 
 pub mod detect;
 pub mod exporter;
@@ -41,6 +41,29 @@ pub fn export_dir(root: impl AsRef<Path>, asset: &AssetId, format_code: &str) ->
     root.as_ref().join(asset.as_str()).join(format_code)
 }
 
+/// Every file under `root`, as paths relative to it, sorted for a stable plan.
+///
+/// [`plan`] takes its file list from outside the crate — a download directory,
+/// a directory someone names — and both the CLI and the app build that list the
+/// same way, so an export from the app plans exactly like one from a terminal.
+pub fn collect_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                stack.push(path);
+            } else if let Ok(relative) = path.strip_prefix(root) {
+                files.push(relative.to_path_buf());
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -49,6 +72,38 @@ mod tests {
     fn export_dir_uses_asset_then_format() {
         let dir = export_dir("/lib", &AssetId::new("abc-123"), "fbx");
         assert_eq!(dir, PathBuf::from("/lib/abc-123/fbx"));
+    }
+
+    #[test]
+    fn collect_files_lists_everything_relative_and_sorted() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let touch = |relative: &str| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"x").unwrap();
+        };
+        touch("textures/T_Rock_BaseColor.png");
+        touch("textures/T_Rock_Roughness.png");
+        touch("meshes/SM_Rock.fbx");
+        touch("License.txt");
+
+        let files = collect_files(root).unwrap();
+        assert_eq!(
+            files,
+            [
+                PathBuf::from("License.txt"),
+                PathBuf::from("meshes/SM_Rock.fbx"),
+                PathBuf::from("textures/T_Rock_BaseColor.png"),
+                PathBuf::from("textures/T_Rock_Roughness.png"),
+            ]
+        );
+    }
+
+    #[test]
+    fn collect_files_of_an_empty_directory_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(collect_files(dir.path()).unwrap().is_empty());
     }
 
     #[test]

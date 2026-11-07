@@ -747,7 +747,7 @@ async fn resolve(config: &Config, args: ResolveArgs) -> Result<()> {
 /// catalog, resolve, and download commands all need this.
 async fn signed_in_client(config: &Config) -> Result<FabClient> {
     let auth = EpicAuth::from_config(config)?;
-    let store = FileTokenStore::new(config.paths.token_file());
+    let store = DefaultTokenStore::from_config(config);
     let token = ensure_fresh_token(&auth, &store)
         .await
         .context("not signed in; run `assetcraft login` first")?;

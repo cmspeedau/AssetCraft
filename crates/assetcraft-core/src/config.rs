@@ -118,14 +118,20 @@ pub struct Config {
 
 impl Config {
     /// Load configuration using the platform's standard directories.
+    ///
+    /// The three service base URLs each take an environment override
+    /// (`ASSETCRAFT_FAB_BASE_URL`, `ASSETCRAFT_ACCOUNT_BASE_URL`,
+    /// `ASSETCRAFT_EPIC_ID_BASE_URL`). That is how the app, the CLI, and the
+    /// screenshot driver run against a local stand-in for Fab and Epic
+    /// without changing a build.
     pub fn load() -> Result<Self> {
         let dirs = ProjectDirs::from("dev", "AssetCraft", "AssetCraft").ok_or_else(|| {
             Error::Config("could not determine platform data directories".to_string())
         })?;
         Ok(Self {
-            fab_base_url: DEFAULT_FAB_BASE_URL.to_string(),
-            account_base_url: DEFAULT_ACCOUNT_BASE_URL.to_string(),
-            epic_id_base_url: DEFAULT_EPIC_ID_BASE_URL.to_string(),
+            fab_base_url: env_override("ASSETCRAFT_FAB_BASE_URL", DEFAULT_FAB_BASE_URL),
+            account_base_url: env_override("ASSETCRAFT_ACCOUNT_BASE_URL", DEFAULT_ACCOUNT_BASE_URL),
+            epic_id_base_url: env_override("ASSETCRAFT_EPIC_ID_BASE_URL", DEFAULT_EPIC_ID_BASE_URL),
             user_agent: DEFAULT_USER_AGENT.to_string(),
             paths: Paths {
                 config_dir: dirs.config_dir().to_path_buf(),
@@ -150,6 +156,14 @@ impl Config {
     pub fn user_agent_header(&self) -> Result<reqwest::header::HeaderValue> {
         reqwest::header::HeaderValue::from_str(&self.user_agent)
             .map_err(|_| Error::Config(format!("invalid user agent: {}", self.user_agent)))
+    }
+}
+
+/// A base URL the environment may point somewhere else, for testing.
+fn env_override(var: &str, default: &str) -> String {
+    match std::env::var(var) {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => default.to_string(),
     }
 }
 
@@ -224,6 +238,27 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_base_url_moves_only_when_the_env_names_it() {
+        // A variable no other test reads, so the process-wide env is safe here.
+        std::env::set_var("ASSETCRAFT_TEST_OVERRIDE_URL", "http://127.0.0.1:9/x");
+        assert_eq!(
+            env_override("ASSETCRAFT_TEST_OVERRIDE_URL", "https://fab.com"),
+            "http://127.0.0.1:9/x"
+        );
+        // Blank is not a pointer somewhere else: the default stands.
+        std::env::set_var("ASSETCRAFT_TEST_OVERRIDE_URL", "  ");
+        assert_eq!(
+            env_override("ASSETCRAFT_TEST_OVERRIDE_URL", "https://fab.com"),
+            "https://fab.com"
+        );
+        std::env::remove_var("ASSETCRAFT_TEST_OVERRIDE_URL");
+        assert_eq!(
+            env_override("ASSETCRAFT_TEST_OVERRIDE_URL", "https://fab.com"),
+            "https://fab.com"
+        );
+    }
 
     #[test]
     fn rooted_at_places_paths_under_the_root() {

@@ -1,8 +1,9 @@
 //! The Epic Games OAuth flow.
 //!
-//! AssetCraft uses Epic's launcher client: the user opens a URL in a browser,
-//! signs in, and copies the authorization code that comes back. That code is
-//! exchanged for an access token, which is refreshed thereafter.
+//! AssetCraft uses Epic's launcher client: the user opens a URL that starts
+//! at Epic's login page, signs in, and the browser lands on a page carrying
+//! the authorization code, which the user pastes back. That code - single-use
+//! - is exchanged for an access token, which is refreshed thereafter.
 //!
 //! Epic's browser *device* flow — where a short code is displayed and the user
 //! approves it — is not offered to the launcher client, so this crate does not
@@ -23,6 +24,48 @@ const LAUNCHER_CLIENT_SECRET: &str = "daafbccc737745039dffe53d94fc76cf";
 
 /// Path of the token endpoint on the account service.
 const TOKEN_PATH: &str = "/account/api/oauth/token";
+
+/// Percent-encodes the reserved characters an Epic redirect target contains,
+/// so Epic's login page will accept it as the place to land after sign-in.
+/// The input carries no percent signs — the client id is hex and the rest is
+/// fixed path and query — which is why plain replaces are safe here.
+fn encode_redirect_target(url: &str) -> String {
+    url.replace(':', "%3A")
+        .replace('/', "%2F")
+        .replace('?', "%3F")
+        .replace('&', "%26")
+        .replace('=', "%3D")
+}
+
+/// Accepts whatever the browser page handed the user as the authorization
+/// code: the bare code, a redirect URL carrying `code=`, or the whole JSON
+/// body of the page after sign-in, which users commonly select-all and
+/// paste. Epic names the field `code`; pages have also shown it as
+/// `authorizationCode`, so a paste of either yields the code. JSON that
+/// holds no code is not a code and comes back empty - callers must say so
+/// rather than trade something that is not a code for a token.
+pub fn extract_authorization_code(pasted: &str) -> String {
+    let trimmed = pasted.trim();
+    if trimmed.starts_with('{') {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            for key in ["code", "authorizationCode"] {
+                if let Some(code) = value.get(key).and_then(|code| code.as_str()) {
+                    if !code.is_empty() {
+                        return code.to_owned();
+                    }
+                }
+            }
+        }
+        return String::new();
+    }
+    if let Some((_, tail)) = trimmed.rsplit_once("code=") {
+        let code = tail.split(['&', '#']).next().unwrap_or_default();
+        if !code.is_empty() {
+            return code.to_owned();
+        }
+    }
+    trimmed.to_owned()
+}
 
 /// Everything needed to authenticate against Epic.
 #[derive(Debug, Clone)]
@@ -59,12 +102,19 @@ impl EpicAuth {
     }
 
     /// The URL the user opens to sign in and obtain an authorization code.
+    ///
+    /// It starts at Epic's HTML login page and names the JSON redirect
+    /// endpoint as its target: after signing in, the browser's fresh session
+    /// completes that hop and the page answers with the code. Linking the
+    /// JSON endpoint directly instead shows a logged-out browser a page of
+    /// nulls next to a warning about sharing codes - true, but nobody reads
+    /// "null" as "sign in here first".
     pub fn authorization_url(&self) -> String {
-        format!(
-            "{}/id/api/redirect?clientId={}&responseType=code",
-            self.epic_id_base_url.trim_end_matches('/'),
-            LAUNCHER_CLIENT_ID
-        )
+        let base = self.epic_id_base_url.trim_end_matches('/');
+        let redirect = encode_redirect_target(&format!(
+            "{base}/id/api/redirect?clientId={LAUNCHER_CLIENT_ID}&responseType=code"
+        ));
+        format!("{base}/id/login?redirectUrl={redirect}")
     }
 
     /// Exchange an authorization code for a token.
@@ -176,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn authorization_url_names_the_launcher_client() {
+    fn authorization_url_opens_the_login_page_with_the_json_hop_as_target() {
         let auth = EpicAuth::new(
             "https://account.example",
             "https://www.epicgames.com",
@@ -185,7 +235,34 @@ mod tests {
         let url = auth.authorization_url();
         assert_eq!(
             url,
-            "https://www.epicgames.com/id/api/redirect?clientId=34a02cf8f4414e29b15921876da36f9a&responseType=code"
+            "https://www.epicgames.com/id/login?redirectUrl=https%3A%2F%2Fwww.epicgames.com\
+             %2Fid%2Fapi%2Fredirect%3FclientId%3D34a02cf8f4414e29b15921876da36f9a\
+             %26responseType%3Dcode"
+        );
+    }
+
+    #[test]
+    fn the_paste_box_accepts_everything_the_browser_page_offers() {
+        // The bare code, as Epic's page labels it.
+        assert_eq!(extract_authorization_code(" XYZabc "), "XYZabc");
+        // The redirect URL, code and all.
+        assert_eq!(
+            extract_authorization_code("https://localhost/launcher/authorized?code=XYZabc"),
+            "XYZabc"
+        );
+        // The whole JSON body, in either field name the page has used.
+        assert_eq!(
+            extract_authorization_code(r#"{"code":"XYZabc","sid":"s"}"#),
+            "XYZabc"
+        );
+        assert_eq!(
+            extract_authorization_code(r#"{"authorizationCode":"XYZabc"}"#),
+            "XYZabc"
+        );
+        // A page that holds no code - the logged-out nulls - is not a code.
+        assert_eq!(
+            extract_authorization_code(r#"{"authorizationCode":null,"sid":null}"#),
+            ""
         );
     }
 

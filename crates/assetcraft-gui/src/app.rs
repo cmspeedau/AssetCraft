@@ -239,18 +239,7 @@ impl App {
         let mut app = Self::default();
 
         match Config::load() {
-            Ok(mut config) => {
-                // Lets the app and the screenshots run against a local stand-in
-                // for Fab without changing the build.
-                if let Ok(base) = std::env::var("ASSETCRAFT_FAB_BASE_URL") {
-                    config.fab_base_url = base;
-                }
-                if let Ok(base) = std::env::var("ASSETCRAFT_ACCOUNT_BASE_URL") {
-                    config.account_base_url = base;
-                }
-                if let Ok(base) = std::env::var("ASSETCRAFT_EPIC_ID_BASE_URL") {
-                    config.epic_id_base_url = base;
-                }
+            Ok(config) => {
                 app.sign_in_url = assetcraft_auth::EpicAuth::from_config(&config)
                     .map(|auth| auth.authorization_url())
                     .unwrap_or_default();
@@ -1515,11 +1504,9 @@ impl App {
 
             ui.add_space(10.0);
             ui.label(
-                egui::RichText::new(
-                    "1. Sign in to epicgames.com in your browser, then open the link",
-                )
-                .size(12.0)
-                .color(theme::FG_SECONDARY),
+                egui::RichText::new("1. Open the sign-in page and sign in to Epic")
+                    .size(12.0)
+                    .color(theme::FG_SECONDARY),
             );
             ui.horizontal(|ui| {
                 if ui.button("Open sign-in page").clicked() {
@@ -1537,9 +1524,9 @@ impl App {
             );
             ui.label(
                 egui::RichText::new(
-                    "The page answers with JSON; the code is the value of \
-                     \"authorizationCode\". If it says null, the browser is not signed in \
-                     yet - sign in to epicgames.com and open the link again.",
+                    "Signing in lands the browser on a small JSON page; the code is the \
+                     value of \"authorizationCode\". If every field is null, the sign-in \
+                     did not finish - open the link again after signing in.",
                 )
                 .size(10.0)
                 .color(theme::FG_MUTED),
@@ -1553,7 +1540,7 @@ impl App {
             );
             let response = ui.add(
                 egui::TextEdit::singleline(&mut self.sign_in_code)
-                    .hint_text("authorization code")
+                    .hint_text("the code - or paste the whole JSON page")
                     .desired_width(f32::INFINITY),
             );
             if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -1603,8 +1590,19 @@ impl App {
     }
 
     fn submit_sign_in(&mut self) {
-        let code = self.sign_in_code.trim().to_owned();
+        // The paste box takes whatever the browser page handed over: the
+        // bare code, the redirect URL, or the whole JSON body. A JSON body
+        // with no code in it (the logged-out nulls page) yields nothing.
+        let code = assetcraft_auth::extract_authorization_code(&self.sign_in_code);
         if code.is_empty() {
+            if !self.sign_in_code.trim().is_empty() {
+                self.sign_in_error = Some(
+                    "That paste holds no authorization code. Sign in to \
+                     epicgames.com in the browser first, open the link \
+                     again, and paste the page it shows."
+                        .to_owned(),
+                );
+            }
             return;
         }
         let Some(worker) = &self.worker else {

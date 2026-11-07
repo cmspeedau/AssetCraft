@@ -434,7 +434,9 @@ async fn login(config: &Config, args: LoginArgs) -> Result<()> {
         println!();
         println!("     {}", auth.authorization_url());
         println!();
-        println!("2. The page shows a JSON object; copy the value of \"code\".");
+        println!("2. The page shows a JSON object; copy the value of \"authorizationCode\".");
+        println!("   If it says null, sign in to epicgames.com in that browser tab,");
+        println!("   then open the URL again - the code appears once you are signed in.");
         println!("3. Return here and run:");
         println!();
         println!("     assetcraft login --code <CODE>");

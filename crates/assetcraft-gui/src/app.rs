@@ -1515,9 +1515,11 @@ impl App {
 
             ui.add_space(10.0);
             ui.label(
-                egui::RichText::new("1. Open the sign-in page in your browser")
-                    .size(12.0)
-                    .color(theme::FG_SECONDARY),
+                egui::RichText::new(
+                    "1. Sign in to epicgames.com in your browser, then open the link",
+                )
+                .size(12.0)
+                .color(theme::FG_SECONDARY),
             );
             ui.horizontal(|ui| {
                 if ui.button("Open sign-in page").clicked() {
@@ -1533,10 +1535,19 @@ impl App {
                     .size(10.0)
                     .color(theme::FG_MUTED),
             );
+            ui.label(
+                egui::RichText::new(
+                    "The page answers with JSON; the code is the value of \
+                     \"authorizationCode\". If it says null, the browser is not signed in \
+                     yet - sign in to epicgames.com and open the link again.",
+                )
+                .size(10.0)
+                .color(theme::FG_MUTED),
+            );
 
             ui.add_space(8.0);
             ui.label(
-                egui::RichText::new("2. Paste the code the page shows")
+                egui::RichText::new("2. Paste the authorization code")
                     .size(12.0)
                     .color(theme::FG_SECONDARY),
             );

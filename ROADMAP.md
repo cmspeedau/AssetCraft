@@ -25,11 +25,13 @@ change as we learn. See [README.md](README.md) for what the project is.
   is recorded, so previously downloaded assets are browsable and re-exportable
   by id with the network off, and re-downloadable by id: `download` with no
   flags brings an asset back to its recorded location.
-- **M4 — Blender Export:** in progress. A Blender adapter lays an asset's files
+- **M4 — Blender Export:** complete. A Blender adapter lays an asset's files
   out in a standardized PBR tree, classifies each map into a Principled BSDF
   material graph, and writes a version-tolerant Python script; `export --run`
-  hands it to Blender, and Blender is detected per OS. An installable in-Blender
-  addon remains.
+  hands it to Blender, and Blender is detected per OS. Each export also carries
+  a manifest, and an installable in-Blender addon (`blender_addon/`) turns the
+  export folder into one-click imports from the viewport sidebar — offline,
+  with no terminal.
 
 ## Vision
 
@@ -211,8 +213,12 @@ The first real integration.
 - [x] A generated, version-tolerant Blender Python script that builds the
       materials and, unless disabled, imports the meshes into the active scene
       and assigns the material — `assetcraft export --run` hands it to Blender.
-- [ ] An installable in-Blender addon for one-click import from inside the
-      editor (the generated script is the bridge; the addon is a follow-on).
+- [x] An installable in-Blender addon for one-click import from inside the
+      editor — `blender_addon/` discovers exports through the
+      `assetcraft_export.json` manifest the exporter writes beside the script,
+      and runs that script in place (one recipe, generated once, run from the
+      terminal or the sidebar). `python3 blender_addon/package.py` builds the
+      zip Blender installs. See `blender_addon/README.md`.
 - [x] Per-OS Blender path detection (Linux, macOS, Windows, plus `PATH`).
 - [x] Export from the CLI (`assetcraft export`) and as a programmatic API
       (`assetcraft_dcc_blender::{plan, export, material_script}`).
@@ -221,11 +227,13 @@ The first real integration.
 correctly-textured material in Blender.
 
 > **Reaching the DoD.** The layout, role classification, and material graph are
-> pure and covered by tests, and the generated script is inspected by tests for
-> the sockets and imports it emits. Blender itself is not in CI, so the final
-> "does it look right in the viewport" check — and the chunk base derivation
-> still to confirm against a real signed-in response before a first download —
-> remain manual validation steps.
+> pure and covered by tests, and the generated script is both inspected (for the
+> sockets and imports it emits) and executed: the CI `addon` job builds a real
+> export with the Rust exporter, then runs its script — and the addon's
+> discovery of it — under a stub `bpy` (`blender_addon/tests/`). Blender itself
+> is not in CI, so the final "does it look right in the viewport" check — and
+> the chunk base derivation still to confirm against a real signed-in response
+> before a first download — remain manual validation steps.
 
 ### M5 — GUI & Packaging → `v1.0.0`
 
@@ -304,6 +312,80 @@ correctly-textured `StandardMaterial3D`/`ORMMaterial3D` in Godot.
 > base derivation still to confirm before the bytes can be fetched, remain
 > manual validation steps.
 
+### M7 — Misty Engine Export → `v1.5.0`
+
+The third DCC, and the first whose editor is built like AssetCraft is:
+[Misty Engine](https://github.com/Aalzard/MistyEngine) is a Unity-style game
+engine in Rust (wgpu, egui, hecs, Lua) with a GPL-3.0 + runtime-exception
+license — like Blender, it is talked to across the file and process boundary,
+so the adapter stays MIT/Apache. Its asset pipeline is close enough to our
+layout that the exporter mostly translates rather than converts. The engine's
+youth is a fact of the plan: v0.1.0 shipped November 2026, the editor is
+Windows-only today, and its text asset formats may move underneath us — so
+every emitted format is pinned to a release, not assumed. The v1.2.0–v1.4.0
+gap is deliberate room for M5 packaging and M6 follow-on work.
+
+Misty differs from Blender and Godot in three ways that shape the work: it
+ingests **glTF and OBJ but no FBX**, so Fab's FBX-first formats need a
+conversion or selection decision before the exporter sees them; it is
+**project-first** — assets live under an `Assets/` tree where every file and
+folder carries a `.meta` GUID sidecar and references are by GUID — so an
+export is an edit to a project, not a drop into a folder; and it has **no
+documented headless scripting entry point** — Lua runs inside the running
+editor or player — so `--run` means "open the project in the editor", and
+verification leans on the engine's `MISTY_SCREENSHOT` capture mode.
+
+- [ ] `assetcraft-dcc-misty` adapter crate on the shared export trait (M6),
+      reusing the M4 PBR layout (`meshes/`, `textures/`, `other/`) and the same
+      name-based role classification rather than re-deriving either.
+- [ ] Mesh path with no FBX hole: prefer a Fab format that is already glTF,
+      fall back to the OBJ the asset ships, and otherwise convert FBX → `.glb`
+      through a headless Blender pass (reusing M4's Blender detection and
+      script emission), recording which route produced the file.
+- [ ] Misty material assets: emit the text format behind the Standard-shader
+      material, filling the engine's actual field layout — albedo, metallic,
+      smoothness/roughness, normal, occlusion — with maps placed by the role
+      classification, the packing pinned by fixtures built from real
+      `Assets/Materials` files rather than guesswork.
+- [ ] Project integration: write under the target project's
+      `Assets/AssetCraft/<asset-id>/` and emit `.meta` sidecars with
+      deterministic GUIDs (same asset and name → same GUID), so a re-export
+      refreshes the project instead of duplicating it and editor-side renames
+      keep working.
+- [ ] A prefab (and a scene entry) placing the mesh with the material applied,
+      so opening the project shows the asset rather than a pile of files.
+- [ ] `assetcraft export --dcc misty` wired into the CLI; `--run` opens the
+      project in the detected editor (there is no headless script hand-off to
+      call yet); per-OS Misty path detection — Windows today, Linux and macOS
+      as the editor lands — reusing the M4 detection shape.
+- [ ] Programmatic API: `assetcraft_dcc_misty::{plan, export, material_asset,
+      prefab}` alongside the Blender and Godot equivalents, so the GUI drives
+      all three.
+- [ ] Format pin: fixtures and emitted layouts are recorded against a named
+      Misty release (starting from v0.1.x), and an export records the engine
+      version it wrote for; upgrading the pin is a deliberate, tested step.
+- [ ] An in-editor Lua tool for one-click import of an AssetCraft export
+      directory (the generated files are the bridge; the tool is a follow-on,
+      as with the Blender addon and Godot plugin).
+- [ ] Meets the plugin contract with no new caveats: `export --dcc misty`
+      works with the network off from the source the library recorded, and the
+      GUI drives the whole path without a terminal (guiding principles;
+      `docs/architecture.md`).
+
+**DoD:** `assetcraft export <asset-id> --dcc misty` drops a Fab asset into a
+Misty project — glTF mesh, Standard-shader material with its maps wired, a
+prefab that places it — and opening the project shows a scene-ready,
+correctly-textured asset.
+
+> **Reaching the DoD.** The layout, role classification, GUID generation, and
+> material/prefab emission are pure and covered by tests, with fixtures pinning
+> real Misty asset files. Misty is not in CI — as with Blender and Godot the
+> viewport check is manual, made one command by the engine's
+> `MISTY_SCREENSHOT` mode. The engine's youth is the standing risk: the text
+> formats can change between releases, so each release re-validates the pin
+> rather than trusting it, and the FBX→glTF Blender pass carries the only
+> toolchain dependency outside this repository.
+
 ## Cross-cutting tracks
 
 Ongoing, not tied to a single milestone:
@@ -325,6 +407,6 @@ Ongoing, not tied to a single milestone:
 
 - Propose changes via an issue or pull request against this file.
 - Tell us which DCC you need next — that directly orders the DCC milestones
-  (Blender in M4, Godot planned in M6).
+  (Blender in M4, Godot planned in M6, Misty Engine planned in M7).
 - Milestone DoD checkboxes are the source of truth for "done"; keep them honest
   when closing work.

@@ -373,6 +373,8 @@ name = "assetcraft-dcc-blender"
 version = "0.1.0"
 dependencies = [
  "assetcraft-core",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

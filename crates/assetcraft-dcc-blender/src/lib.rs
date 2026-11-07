@@ -1,11 +1,12 @@
 //! Blender integration.
 //!
-//! M4 is the exporter itself: the folder layout, the PBR material graph, and the
-//! Python script that hands both to Blender.
+//! M4 is the exporter itself: the folder layout, the PBR material graph, a
+//! Python script that rebuilds both in Blender, and a manifest that says what
+//! an export is so the in-editor addon can find and run it.
 //!
 //! The vocabulary the layout is written in — which PBR slot a texture name
-//! fills, which level of detail a mesh belongs to, what kind of file anything is
-//! — lives in [`assetcraft_core::structure`], because the asset browser
+//! fills, which level of detail a mesh belongs to, what kind of file anything
+//! is — lives in [`assetcraft_core::structure`], because the asset browser
 //! describes an asset with the same reading and the next adapter reuses it
 //! rather than re-deriving it. This crate re-exports that vocabulary, so
 //! [`classify`] and [`TextureRole`] keep working from here. What only Blender
@@ -17,6 +18,7 @@ use assetcraft_core::AssetId;
 
 pub mod detect;
 pub mod exporter;
+pub mod manifest;
 pub mod material;
 pub mod plan;
 pub mod script;
@@ -25,7 +27,8 @@ pub use assetcraft_core::{
     classify, classify_texture, file_kind, without_lod_token, AssetStructure, Classified, FileKind,
     TextureRole,
 };
-pub use exporter::{export, ExportOptions, ExportReport};
+pub use exporter::{export, ExportOptions, ExportReport, SCRIPT_NAME};
+pub use manifest::{ExportManifest, MANIFEST_NAME, MANIFEST_VERSION};
 pub use material::{Binding, MaterialSpec, TextureMap};
 pub use plan::{plan, ExportPlan, PlannedFile};
 pub use script::material_script;

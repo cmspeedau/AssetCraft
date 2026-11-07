@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
 use assetcraft_catalog::FabClient;
-use assetcraft_core::{select, AssetId, SelectionCriteria};
+use assetcraft_core::{select, AssetId, AssetStructure, SelectionCriteria};
 use assetcraft_download::{
     ChunkStore, DownloadFile, DownloadOptions, Downloader, Manifest, Progress,
 };
@@ -68,6 +68,9 @@ pub struct Resolved {
     /// The directory the manifest was served from, used as the chunk base
     /// unless a request supplies one.
     pub chunk_base: String,
+    /// What the manifest's files contain — its texture maps and levels of detail
+    /// — read from their names, before a single chunk has been fetched.
+    pub structure: AssetStructure,
 }
 
 /// What a finished transfer produced.
@@ -81,6 +84,9 @@ pub struct Acquired {
     pub bytes: u64,
     /// The absolute directory the files were written into.
     pub path: PathBuf,
+    /// What the files that were written contain: their texture maps and levels of
+    /// detail, read from their names.
+    pub structure: AssetStructure,
 }
 
 /// Progress a caller can show: what stage a transfer is in, and how far along.
@@ -200,11 +206,17 @@ where
 
     let _ = std::fs::remove_dir_all(&scratch);
     let path = std::fs::canonicalize(&request.output).unwrap_or_else(|_| request.output.clone());
+    let structure = structure_of_files(
+        files
+            .iter()
+            .map(|file| (file.filename.as_str(), file.data.len() as u64)),
+    );
     Ok(Acquired {
         format,
         files: written,
         bytes,
         path,
+        structure,
     })
 }
 
@@ -249,13 +261,20 @@ pub async fn resolve(
         };
         match Manifest::parse(&bytes) {
             Ok(manifest) => {
+                let structure = structure_of_files(
+                    manifest
+                        .files
+                        .iter()
+                        .map(|file| (file.filename.as_str(), file.size)),
+                );
                 return Ok(Resolved {
                     format: format_code,
                     file: chosen.file.name.clone(),
                     file_id: chosen.file_id().unwrap_or_default().to_owned(),
                     artifact: info.artifact_id.clone(),
-                    manifest,
                     chunk_base: base_from_manifest_url(&point.manifest_url),
+                    structure,
+                    manifest,
                 });
             }
             Err(error) => {
@@ -264,6 +283,19 @@ pub async fn resolve(
         }
     }
     Err(last_error.unwrap_or_else(|| anyhow!("no distribution point produced a manifest")))
+}
+
+/// Describe a set of files by name, with the size each one reported.
+///
+/// A manifest names every file the asset installs and says how big each is, so
+/// the asset's texture maps and levels of detail are known before any of its
+/// bytes have been fetched.
+fn structure_of_files<'a>(files: impl IntoIterator<Item = (&'a str, u64)>) -> AssetStructure {
+    AssetStructure::from_sized(
+        files
+            .into_iter()
+            .map(|(filename, size)| (PathBuf::from(filename), size)),
+    )
 }
 
 /// The manifest URL's directory, without its query or fragment.
@@ -341,8 +373,44 @@ impl Totals {
 
 #[cfg(test)]
 mod tests {
-    use super::{base_from_manifest_url, safe_join};
+    use super::{base_from_manifest_url, safe_join, structure_of_files};
+    use assetcraft_core::TextureRole;
     use std::path::Path;
+
+    #[test]
+    fn a_manifest_names_its_maps_and_levels_before_anything_is_fetched() {
+        let structure = structure_of_files([
+            ("Cloud/Rock/SM_Rock_LOD0.fbx", 4000u64),
+            ("Cloud/Rock/SM_Rock_LOD1.fbx", 900),
+            ("Cloud/Rock/T_Rock_BaseColor.png", 3000),
+            ("Cloud/Rock/T_Rock_Roughness_LOD1.png", 200),
+            ("Cloud/Rock/README.txt", 40),
+        ]);
+
+        let groups = structure.mesh_groups();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "SM_Rock");
+        assert_eq!(groups[0].levels, vec![0, 1]);
+        assert_eq!(
+            structure.role_counts(),
+            vec![(TextureRole::BaseColor, 1), (TextureRole::Roughness, 1),]
+        );
+        // The README is not a map or a mesh, and its bytes are not in the total.
+        assert_eq!(structure.other.len(), 1);
+        assert_eq!(structure.known_size_bytes(), 8100);
+        assert_eq!(
+            structure.summary(),
+            "2 texture maps · 1 mesh (LODs 0-1) · 1 other file"
+        );
+    }
+
+    #[test]
+    fn manifest_paths_read_correctly_whatever_separators_they_use() {
+        // A manifest lists paths with `/` on every platform.
+        let structure = structure_of_files([("Content/Rock/rock_normal.png", 10)]);
+        assert_eq!(structure.textures[0].role, TextureRole::Normal);
+        assert_eq!(structure.textures[0].material.as_deref(), Some("rock"));
+    }
 
     #[test]
     fn a_manifest_url_loses_its_file_name_and_query() {

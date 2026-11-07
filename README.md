@@ -82,8 +82,10 @@ what already works and what is still landing.
 
 - Search and filter the Fab/Megascans library by category, tags, type, and
   resolution.
-- Rich asset detail: preview thumbnails, LODs, texture maps, license, and
-  download options.
+- Rich asset detail: preview thumbnails, license, and download options, plus the
+  texture maps and levels of detail an asset's files name — from its manifest
+  before anything is fetched, or from the files already on disk with the network
+  off.
 - Offline browsing of the metadata you have already cached.
 
 ### Downloads
@@ -193,6 +195,14 @@ assetcraft taxonomy tags
 # Inspect an asset's formats, and pick the file you want
 assetcraft formats <asset-id>
 assetcraft formats <asset-id> --format fbx --quality 4K --prefer largest
+
+# Describe what an asset contains: its texture maps by material, its meshes by
+# level of detail. By default this reads Fab's manifest, which names every file
+# before a single byte is fetched (requires sign-in); --offline reads the files
+# `download` left on disk, and --source reads a directory you name.
+assetcraft structure <asset-id> --format fbx
+assetcraft structure <asset-id> --offline
+assetcraft structure <asset-id> --source ./Downloads --json
 
 # Resolve an owned asset into the chunks and files to fetch (requires sign-in)
 assetcraft resolve <asset-id> --format fbx --quality 4K --chunks
@@ -308,7 +318,7 @@ cargo clippy --workspace -- -D warnings
 assetcraft/
 ├── Cargo.toml              # workspace manifest
 ├── crates/
-│   ├── assetcraft-core/        # domain model, traits, config, errors
+│   ├── assetcraft-core/        # domain model, asset structure, config, errors
 │   ├── assetcraft-auth/        # Fab OAuth + token storage
 │   ├── assetcraft-catalog/     # Fab API client + metadata cache
 │   ├── assetcraft-download/    # download engine

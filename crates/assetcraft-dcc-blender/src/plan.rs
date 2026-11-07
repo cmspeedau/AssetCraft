@@ -9,42 +9,10 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use assetcraft_core::AssetId;
+use assetcraft_core::{file_kind, without_lod_token, AssetId, FileKind};
 
-use crate::material::{MaterialSpec, TextureMap};
+use crate::material::{Binding, MaterialSpec, TextureMap};
 use crate::{classify, export_dir, TextureRole};
-
-/// Mesh formats the exporter knows how to lay out and Blender can import.
-const MESH_EXTENSIONS: &[&str] = &[
-    "fbx", "obj", "glb", "gltf", "usd", "usda", "usdc", "usdz", "blend", "abc", "ply", "stl", "dae",
-];
-
-/// Image formats treated as texture maps.
-const TEXTURE_EXTENSIONS: &[&str] = &[
-    "png", "jpg", "jpeg", "tif", "tiff", "exr", "tga", "bmp", "hdr", "dds", "webp", "psd",
-];
-
-/// What a file is, for layout purposes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileKind {
-    /// A mesh the exporter imports into the scene.
-    Mesh,
-    /// An image, placed under `textures/` and offered to the material graph.
-    Texture,
-    /// Anything else, kept under `other/` at its original relative path.
-    Other,
-}
-
-impl FileKind {
-    /// The subdirectory files of this kind are placed under.
-    pub const fn dir(self) -> &'static str {
-        match self {
-            FileKind::Mesh => "meshes",
-            FileKind::Texture => "textures",
-            FileKind::Other => "other",
-        }
-    }
-}
 
 /// One source file and where it lands in the export.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,8 +95,13 @@ pub fn plan(
                     &mut used,
                     Path::new(FileKind::Texture.dir()).join(base(source)),
                 );
-                let classified = classify(&base(source).to_string_lossy());
-                if let Some(binding) = classified.role.binding() {
+                let file_name = base(source).to_string_lossy().into_owned();
+                // Read the name without its level-of-detail token, so a map one
+                // level shares with its siblings (`rock_BaseColor_LOD1.png`)
+                // fills the slot its name names — the same reading
+                // `AssetStructure` uses to describe the asset.
+                let classified = classify(&without_lod_token(&file_name));
+                if let Some(binding) = Binding::for_role(classified.role) {
                     let name = classified
                         .material
                         .unwrap_or_else(|| asset.as_str().to_string());
@@ -170,19 +143,6 @@ pub fn plan(
         files: planned,
         materials,
         meshes,
-    }
-}
-
-/// What a file is, from its extension.
-pub fn file_kind(path: &Path) -> FileKind {
-    let extension = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase);
-    match extension.as_deref() {
-        Some(ext) if MESH_EXTENSIONS.contains(&ext) => FileKind::Mesh,
-        Some(ext) if TEXTURE_EXTENSIONS.contains(&ext) => FileKind::Texture,
-        _ => FileKind::Other,
     }
 }
 
@@ -350,10 +310,31 @@ mod tests {
     }
 
     #[test]
-    fn extensions_are_matched_case_insensitively() {
-        assert_eq!(file_kind(Path::new("Rock.FBX")), FileKind::Mesh);
-        assert_eq!(file_kind(Path::new("Rock.PNG")), FileKind::Texture);
-        assert_eq!(file_kind(Path::new("Rock.txt")), FileKind::Other);
-        assert_eq!(file_kind(Path::new("Rock")), FileKind::Other);
+    fn a_map_shared_between_levels_still_fills_its_slot() {
+        let files = paths(&["rock_BaseColor_LOD1.png", "rock_Normal_LOD1.png"]);
+        let plan = plan("/lib", &asset(), "fbx", &files);
+
+        assert_eq!(
+            plan.files[0].role,
+            Some(TextureRole::BaseColor),
+            "the level token must not hide the role"
+        );
+        assert_eq!(plan.materials[0].maps.len(), 2);
+        assert_eq!(plan.materials[0].name, "rock");
+    }
+
+    #[test]
+    fn levels_of_a_mesh_are_planned_as_meshes_like_any_other() {
+        let files = paths(&["rock_LOD0.fbx", "rock_LOD1.fbx"]);
+        let plan = plan("/lib", &asset(), "fbx", &files);
+
+        assert_eq!(
+            plan.meshes,
+            vec![
+                PathBuf::from("meshes/rock_LOD0.fbx"),
+                PathBuf::from("meshes/rock_LOD1.fbx")
+            ]
+        );
+        assert!(plan.materials.is_empty());
     }
 }

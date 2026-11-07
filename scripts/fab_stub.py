@@ -6,15 +6,22 @@ against fab.com from a dev box or CI. This stub speaks the same wire shape
 (see crates/assetcraft-catalog/src/wire.rs) and generates thumbnails, so the
 client, worker, paging, and image pipeline can all be tested end to end.
 
+Downloads are served too: `asset-formats` and `download-info` describe one FBX
+file, and `/stub/manifest.bin` is a real binary manifest whose two chunks are
+served under `/stub/ChunksV4/`. Both are generated here, so the whole transfer
+path — resolve, fetch, reassemble, verify — runs without a network.
+
     pip install pillow
     python3 scripts/fab_stub.py 8791
     ASSETCRAFT_FAB_BASE_URL=http://127.0.0.1:8791 cargo run -p assetcraft-gui
 """
 
 import colorsys
+import hashlib
 import io
 import json
 import re
+import struct
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -177,6 +184,183 @@ def oauth_token(display_name="Stub Player", account_id="acc-stub"):
     }
 
 
+#: What every stub download produces, and the chunks its files arrive in.
+DOWNLOAD_FILES = [
+    ("Content/stub_mesh.uasset", b"AssetCraft stub mesh payload\n" * 40),
+    ("Content/stub_texture.uasset", b"AssetCraft stub texture payload\n" * 90),
+]
+
+MANIFEST_MAGIC = 0x44BEC00C
+CHUNK_MAGIC = 0xB1FE3AA2
+CHUNK_HEADER_SIZE = 66
+
+
+def _u32(value):
+    return struct.pack("<I", value)
+
+
+def _u64(value):
+    return struct.pack("<Q", value)
+
+
+def _i64(value):
+    return struct.pack("<q", value)
+
+
+def _guid(words):
+    return b"".join(_u32(word) for word in words)
+
+
+def _fstring(text):
+    if not text:
+        return _u32(0)
+    raw = text.encode()
+    return _u32(len(raw) + 1) + raw + b"\0"
+
+
+def _section(build):
+    body = bytearray()
+    build(body)
+    return _u32(len(body) + 4) + bytes(body)
+
+
+def stub_chunks():
+    chunks = []
+    for n, (name, data) in enumerate(DOWNLOAD_FILES):
+        chunks.append(
+            {
+                "name": name,
+                "guid": [n + 1, n + 2, n + 3, n + 4],
+                "hash": 0x1122334455667788 + n,
+                "sha1": hashlib.sha1(data).digest(),
+                "group": n % 100,
+                "data": data,
+            }
+        )
+    return chunks
+
+
+def chunk_relative_path(chunk):
+    guid = "".join(f"{word:08X}" for word in chunk["guid"])
+    return f"ChunksV4/{chunk['group']:02}/{chunk['hash']:016X}_{guid}.chunk"
+
+
+def chunk_file(chunk):
+    payload = chunk["data"]
+    header = (
+        _u32(CHUNK_MAGIC)
+        + _u32(3)
+        + _u32(CHUNK_HEADER_SIZE)
+        + _u32(len(payload))
+        + _guid(chunk["guid"])
+        + _u64(chunk["hash"])
+        + bytes([0])
+        + chunk["sha1"]
+        + bytes([0])
+        + _u32(len(payload))
+    )
+    return header + payload
+
+
+def manifest_bytes():
+    """A version 18, uncompressed manifest for the stub's two files."""
+    chunks = stub_chunks()
+
+    def meta(out):
+        out.extend(bytes([0]))
+        out.extend(_u32(18))  # feature level
+        out.extend(bytes([0]))  # is_file_data
+        out.extend(_u32(0))  # app id
+        out.extend(_fstring("AssetCraft Stub"))
+        out.extend(_fstring("1.0"))
+        out.extend(_fstring("stub.exe"))
+        out.extend(_fstring(""))
+        out.extend(_u32(0))  # prerequisites
+        out.extend(_fstring(""))
+        out.extend(_fstring(""))
+        out.extend(_fstring(""))
+
+    def chunk_list(out):
+        out.extend(bytes([0]))
+        out.extend(_u32(len(chunks)))
+        for chunk in chunks:
+            out.extend(_guid(chunk["guid"]))
+        for chunk in chunks:
+            out.extend(_u64(chunk["hash"]))
+        for chunk in chunks:
+            out.extend(chunk["sha1"])
+        for chunk in chunks:
+            out.append(chunk["group"])
+        for _ in chunks:
+            out.extend(_u32(1024 * 1024))
+        for chunk in chunks:
+            out.extend(_i64(len(chunk_file(chunk))))
+
+    def file_list(out):
+        out.extend(bytes([0]))
+        out.extend(_u32(len(chunks)))
+        for chunk in chunks:
+            out.extend(_fstring(chunk["name"]))
+        for _ in chunks:
+            out.extend(_fstring(""))  # symlink target
+        for chunk in chunks:
+            out.extend(hashlib.sha1(chunk["data"]).digest())
+        for _ in chunks:
+            out.append(0)  # flags
+        for _ in chunks:
+            out.extend(_u32(0))  # install tags
+        for chunk in chunks:
+            out.extend(_u32(1))  # chunk parts
+            out.extend(_u32(28))  # part record size
+            out.extend(_guid(chunk["guid"]))
+            out.extend(_u32(0))  # offset into the chunk
+            out.extend(_u32(len(chunk["data"])))
+
+    def custom_fields(out):
+        out.extend(bytes([0]))
+        out.extend(_u32(0))
+
+    body = (
+        _section(meta)
+        + _section(chunk_list)
+        + _section(file_list)
+        + _section(custom_fields)
+    )
+    header = (
+        _u32(MANIFEST_MAGIC)
+        + _u32(41)  # header size
+        + _u32(len(body))
+        + _u32(len(body))
+        + bytes(20)  # sha, unchecked when uncompressed
+        + bytes([0])  # stored_as: uncompressed
+        + _u32(18)  # manifest version
+    )
+    return header + body
+
+
+MANIFEST = manifest_bytes()
+CHUNK_FILES = {
+    chunk_relative_path(chunk): chunk_file(chunk) for chunk in stub_chunks()
+}
+DOWNLOAD_SIZE = sum(len(data) for _, data in DOWNLOAD_FILES)
+
+
+def format_body():
+    return {
+        "assetFormatType": {"code": "fbx", "name": "FBX"},
+        "files": [
+            {
+                "uid": "stub-file",
+                "name": "Stub Asset (4K)",
+                "fileSize": DOWNLOAD_SIZE,
+                "assetType": "3D Model",
+                "platformsIncluded": ["Windows"],
+                "engineVersions": ["5.4"],
+            }
+        ],
+    }
+
+
 def redirect_page():
     body = f"""<!doctype html>
 <html><head><title>Sign in</title></head>
@@ -214,6 +398,39 @@ class Handler(BaseHTTPRequestHandler):
         # The authenticated endpoints start with a CSRF handshake.
         if url.path == "/i/csrf":
             self.reply_json({"ok": True})
+            return
+
+        match = re.fullmatch(r"/i/listings/[\w-]+/asset-formats", url.path)
+        if match:
+            self.reply_json([format_body()])
+            return
+
+        match = re.fullmatch(
+            r"/p/egl/listings/[\w-]+/asset-formats/[\w-]+/files/[\w-]+/download-info",
+            url.path,
+        )
+        if match:
+            self.reply_json(
+                {
+                    "artifactId": "stub-artifact",
+                    "assetFormat": "fbx",
+                    "distributionPoints": [
+                        {"manifestUrl": f"{BASE}/stub/manifest.bin"}
+                    ],
+                }
+            )
+            return
+
+        if url.path == "/stub/manifest.bin":
+            self.reply_bytes(MANIFEST, "application/octet-stream")
+            return
+
+        if url.path.startswith("/stub/ChunksV4/"):
+            chunk = CHUNK_FILES.get(url.path[len("/stub/"):])
+            if chunk is None:
+                self.send_error(404)
+                return
+            self.reply_bytes(chunk, "application/octet-stream")
             return
 
         match = re.fullmatch(r"/e/accounts/[\w-]+/ue/library", url.path)

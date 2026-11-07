@@ -1,0 +1,15 @@
+[package]
+name = "assetcraft-transfer"
+description = "Resolve an owned asset into its files and bring them down to disk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+assetcraft-catalog.workspace = true
+assetcraft-core.workspace = true
+assetcraft-download.workspace = true
+anyhow.workspace = true

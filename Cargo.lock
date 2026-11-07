@@ -347,6 +347,7 @@ dependencies = [
  "assetcraft-dcc-blender",
  "assetcraft-download",
  "assetcraft-library",
+ "assetcraft-transfer",
  "chrono",
  "clap",
  "serde_json",
@@ -399,6 +400,7 @@ dependencies = [
  "assetcraft-catalog",
  "assetcraft-core",
  "assetcraft-library",
+ "assetcraft-transfer",
  "chrono",
  "eframe",
  "egui",
@@ -415,6 +417,16 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "assetcraft-transfer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assetcraft-catalog",
+ "assetcraft-core",
+ "assetcraft-download",
 ]
 
 [[package]]

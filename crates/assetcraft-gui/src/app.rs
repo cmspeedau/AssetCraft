@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use assetcraft_core::{AssetId, Config};
 use assetcraft_library::Library;
+use assetcraft_transfer::Phase;
 
 use crate::data::{self, Card, Filters, View};
 use crate::worker::{Account, CatalogWorker, Command, Event};
@@ -30,10 +31,74 @@ pub enum Source {
 }
 
 /// A download in the drawer.
+/// Where a download has got to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JobStatus {
+    /// Choosing a format and fetching the manifest.
+    Preparing,
+    /// Fetching chunks.
+    Downloading,
+    /// Splicing chunks into files.
+    Assembling,
+    /// Writing the files out.
+    Writing,
+    /// Finished, and recorded in the library.
+    Done,
+    /// Stopped; the message says why.
+    Failed(String),
+}
+
 pub struct Job {
+    /// Asset id, which ties progress events to this row.
+    pub id: String,
     pub name: String,
     pub progress: f32,
-    pub speed_mbps: f32,
+    pub status: JobStatus,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    /// How many files landed, once the download finished.
+    pub files: usize,
+    /// Demo downloads are simulated; live ones come from the worker.
+    pub demo: bool,
+}
+
+impl Job {
+    fn running(&self) -> bool {
+        !matches!(self.status, JobStatus::Done | JobStatus::Failed(_))
+    }
+
+    /// The right-hand label: the stage, or the byte count while downloading.
+    fn label(&self) -> String {
+        match &self.status {
+            JobStatus::Preparing => "Resolving".to_owned(),
+            JobStatus::Downloading if self.bytes_total > 0 => format!(
+                "{} / {}",
+                bytes_label(self.bytes_done),
+                bytes_label(self.bytes_total)
+            ),
+            JobStatus::Downloading => "Downloading".to_owned(),
+            JobStatus::Assembling => "Assembling".to_owned(),
+            JobStatus::Writing => "Writing files".to_owned(),
+            JobStatus::Done if self.files > 0 => format!("Done: {} files", self.files),
+            JobStatus::Done => "Done".to_owned(),
+            JobStatus::Failed(_) => "Failed".to_owned(),
+        }
+    }
+}
+
+/// A byte count a person can scan, e.g. `4.2 MB`.
+fn bytes_label(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    let value = bytes as f64;
+    if value >= KB * KB * KB {
+        format!("{:.1} GB", value / (KB * KB * KB))
+    } else if value >= KB * KB {
+        format!("{:.1} MB", value / (KB * KB))
+    } else if value >= KB {
+        format!("{:.0} KB", value / KB)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 pub struct App {
@@ -352,6 +417,60 @@ impl App {
                 Event::Thumbnail { id, texture } => {
                     self.textures.insert(id, texture);
                 }
+                Event::DownloadPhase { id, phase } => {
+                    if let Some(job) = self.jobs.iter_mut().find(|job| job.id == id) {
+                        match phase {
+                            Phase::Resolving => {
+                                job.status = JobStatus::Preparing;
+                                job.progress = 0.02;
+                            }
+                            Phase::Download {
+                                files_done,
+                                files_total,
+                                bytes_done,
+                                bytes_total,
+                            } => {
+                                job.status = JobStatus::Downloading;
+                                job.bytes_done = bytes_done;
+                                job.bytes_total = bytes_total;
+                                let fraction = if bytes_total > 0 {
+                                    bytes_done as f32 / bytes_total as f32
+                                } else if files_total > 0 {
+                                    files_done as f32 / files_total as f32
+                                } else {
+                                    0.0
+                                };
+                                job.progress = 0.02 + 0.93 * fraction.clamp(0.0, 1.0);
+                            }
+                            Phase::Assembling => {
+                                job.status = JobStatus::Assembling;
+                                job.progress = 0.96;
+                            }
+                            Phase::Writing { done, total } => {
+                                job.status = JobStatus::Writing;
+                                job.progress = 0.96 + 0.04 * (done as f32 / total.max(1) as f32);
+                            }
+                        }
+                    }
+                }
+                Event::DownloadDone { id, bytes, files } => {
+                    if let Some(job) = self.jobs.iter_mut().find(|job| job.id == id) {
+                        job.status = JobStatus::Done;
+                        job.progress = 1.0;
+                        job.bytes_done = bytes;
+                        job.bytes_total = bytes;
+                        job.files = files;
+                    }
+                    self.reload_local();
+                    if self.view == View::Local {
+                        self.cards = self.local_cards.clone();
+                    }
+                }
+                Event::DownloadFailed { id, error } => {
+                    if let Some(job) = self.jobs.iter_mut().find(|job| job.id == id) {
+                        job.status = JobStatus::Failed(error);
+                    }
+                }
                 Event::Session(account) => {
                     self.account = account;
                     // The view may have opened before the session landed.
@@ -505,20 +624,73 @@ impl App {
     /// Downloads need an Epic session, which lands with the library milestone,
     /// so only the demo catalog can queue one for now.
     pub fn download_enabled(&self) -> bool {
-        self.source == Source::Demo
+        self.source == Source::Demo || self.account.is_some()
     }
 
     pub fn start_download(&mut self, i: usize) {
         let Some(card) = self.cards.get(i) else {
             return;
         };
-        if self.jobs.iter().any(|job| job.name == card.title) {
+        let id = card.id.clone();
+        let name = card.title.clone();
+        if self.jobs.iter().any(|job| job.id == id) {
             return;
         }
+
+        let demo = self.source == Source::Demo;
+        if !demo {
+            let Some(worker) = &self.worker else {
+                self.error = Some("The catalog worker is not running.".to_owned());
+                return;
+            };
+            // What the download records, so the local view can show it without
+            // a marketplace round trip.
+            let item = assetcraft_core::LibraryItem {
+                asset_id: id.clone(),
+                namespace: "fab".to_owned(),
+                title: name.clone(),
+                description: card.description.clone(),
+                url: None,
+                source: Some("fab".to_owned()),
+                distribution_method: Some("download".to_owned()),
+                categories: card
+                    .listing_type
+                    .iter()
+                    .map(|name| assetcraft_core::Category {
+                        name: Some(name.clone()),
+                        ..Default::default()
+                    })
+                    .collect(),
+                images: card
+                    .thumbnail
+                    .iter()
+                    .map(|url| assetcraft_core::AssetImage {
+                        url: Some(url.clone()),
+                        kind: Some("thumbnail".to_owned()),
+                        ..Default::default()
+                    })
+                    .collect(),
+            };
+            // The resolution picker is not yet wired to file selection, so the
+            // engine picks the first file of the first format.
+            worker.send(Command::Download {
+                item,
+                quality: None,
+            });
+        }
         self.jobs.push(Job {
-            name: card.title.clone(),
+            id,
+            name,
             progress: 0.0,
-            speed_mbps: 18.0 + (i % 9) as f32,
+            status: if demo {
+                JobStatus::Downloading
+            } else {
+                JobStatus::Preparing
+            },
+            bytes_done: 0,
+            bytes_total: 0,
+            files: 0,
+            demo,
         });
     }
 
@@ -531,22 +703,29 @@ impl App {
         if self.jobs.is_empty() {
             return;
         }
+        // Demo downloads are simulated at a fixed rate; live ones report their
+        // own progress through the worker.
+        let mut finished = Vec::new();
         for job in &mut self.jobs {
-            job.progress = (job.progress + dt as f32 * 0.18).min(1.0);
-        }
-        let finished: Vec<String> = self
-            .jobs
-            .iter()
-            .filter(|job| job.progress >= 1.0)
-            .map(|job| job.name.clone())
-            .collect();
-        for name in finished {
-            if let Some(card) = self.cards.iter().find(|card| card.title == name) {
-                self.local.insert(card.id.clone());
+            if !job.demo {
+                continue;
             }
-            self.jobs.retain(|job| job.name != name);
+            if job.running() {
+                job.progress = (job.progress + dt as f32 * 0.18).min(1.0);
+                if job.progress >= 1.0 {
+                    job.status = JobStatus::Done;
+                }
+            }
+            if job.status == JobStatus::Done {
+                finished.push(job.id.clone());
+            }
         }
-        ctx.request_repaint_after(std::time::Duration::from_millis(80));
+        for id in finished {
+            self.local.insert(id);
+        }
+        if self.jobs.iter().any(|job| job.running()) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(80));
+        }
     }
 
     // ----- panels ----------------------------------------------------------
@@ -719,11 +898,7 @@ impl App {
 
             if let Some(error) = &self.sign_in_error {
                 ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(error)
-                        .size(11.0)
-                        .color(egui::Color32::from_rgb(226, 128, 128)),
-                );
+                ui.label(egui::RichText::new(error).size(11.0).color(theme::RED));
             }
 
             ui.add_space(10.0);
@@ -1058,7 +1233,8 @@ impl App {
             );
 
             ui.separator();
-            let can_download = !live && !local_view;
+            let downloaded = self.local.contains(&id);
+            let can_download = (!live || self.account.is_some()) && !local_view && !downloaded;
             ui.horizontal(|ui| {
                 if can_download {
                     egui::ComboBox::from_id_salt("resolution")
@@ -1083,10 +1259,8 @@ impl App {
                 });
                 let response = ui.add_enabled(can_download, button);
                 if !can_download {
-                    response.on_disabled_hover_text(if local_view {
+                    response.on_disabled_hover_text(if local_view || downloaded {
                         "Already in your local library"
-                    } else if self.account.is_some() {
-                        "Downloads arrive with the library milestone"
                     } else {
                         "Sign in to Epic to download assets"
                     });
@@ -1098,6 +1272,7 @@ impl App {
     }
 
     fn downloads(&mut self, ui: &mut egui::Ui) {
+        let mut dismiss: Vec<String> = Vec::new();
         let frame = egui::Frame::new()
             .fill(theme::PANEL)
             .inner_margin(egui::Margin::symmetric(12, 6));
@@ -1113,12 +1288,27 @@ impl App {
                     ui.add(
                         egui::ProgressBar::new(job.progress)
                             .desired_width(220.0)
-                            .animate(job.progress < 1.0),
+                            .animate(job.running()),
                     );
-                    ui.label(format!("{:.0} MB/s", job.speed_mbps));
+                    let colour = match &job.status {
+                        JobStatus::Failed(_) => theme::RED,
+                        JobStatus::Done => theme::GREEN,
+                        _ => theme::FG_SECONDARY,
+                    };
+                    let response =
+                        ui.label(egui::RichText::new(job.label()).size(11.0).color(colour));
+                    if let JobStatus::Failed(error) = &job.status {
+                        response.on_hover_text(error);
+                    }
+                    if !job.running() && ui.small_button("\u{2715}").clicked() {
+                        dismiss.push(job.id.clone());
+                    }
                 });
             }
         });
+        if !dismiss.is_empty() {
+            self.jobs.retain(|job| !dismiss.contains(&job.id));
+        }
     }
 
     /// The banner shown when the catalog could not be reached.
@@ -1282,11 +1472,7 @@ impl eframe::App for App {
                         ui.vertical(|ui| {
                             ui.label(egui::RichText::new(text).color(theme::FG_MUTED));
                             if let Some(error) = &library_error {
-                                ui.label(
-                                    egui::RichText::new(error)
-                                        .size(11.0)
-                                        .color(egui::Color32::from_rgb(226, 128, 128)),
-                                );
+                                ui.label(egui::RichText::new(error).size(11.0).color(theme::RED));
                             }
                         });
                     });

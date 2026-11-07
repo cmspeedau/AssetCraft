@@ -11,13 +11,12 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use assetcraft_auth::{ensure_fresh_token, DefaultTokenStore, EpicAuth, TokenStore};
 use assetcraft_catalog::{FabClient, ResponseCache, DEFAULT_TTL};
 use assetcraft_core::{
-    AssetFormat, AssetId, AssetSummary, Config, LibraryItem, Page, Preference, SearchQuery,
+    AssetFormat, AssetId, AssetSummary, Config, LibraryItem, Page, Paths, Preference, SearchQuery,
     SelectionCriteria, SortOrder,
 };
-use assetcraft_download::{
-    BandwidthLimit, ChunkStore, DownloadFile, DownloadOptions, Downloader, Manifest,
-};
-use assetcraft_library::{Library, MediaCache};
+use assetcraft_download::{BandwidthLimit, DownloadFile, DownloadOptions, Downloader, Manifest};
+use assetcraft_library::{Download, Library, MediaCache};
+use assetcraft_transfer::Phase;
 
 /// Browse and download Megascans / Fab assets.
 #[derive(Debug, Parser)]
@@ -41,7 +40,7 @@ enum Command {
     Formats(FormatsArgs),
     /// Resolve an owned asset into the chunks and files to fetch (requires sign-in).
     Resolve(ResolveArgs),
-    /// Download an owned asset's files and reassemble them (requires sign-in).
+    /// Download or re-download an owned asset's files and reassemble them (requires sign-in).
     Download(DownloadArgs),
     /// Lay out an asset's downloaded files for a DCC and write the import script.
     Export(ExportArgs),
@@ -204,12 +203,20 @@ struct DownloadArgs {
     select: SelectionArgs,
 
     /// Directory to write the asset's files into.
+    ///
+    /// Omit it to write back to the location the library recorded for the
+    /// asset — what makes `assetcraft download <asset-id>` on its own a
+    /// re-download — or, for a first download, the standard asset directory.
     #[arg(long, short)]
-    output: PathBuf,
+    output: Option<PathBuf>,
 
     /// Base URL the manifest's chunk paths hang off, e.g. `…/CloudDir`.
+    ///
+    /// Omit it to derive the base from the directory of the manifest URL the
+    /// signed download-info response returns. Pass it only when a real
+    /// response pairs a different base with the manifest.
     #[arg(long)]
-    chunk_base: String,
+    chunk_base: Option<String>,
 
     /// Total attempts per chunk, including the first.
     #[arg(long, default_value_t = 3)]
@@ -719,152 +726,112 @@ fn print_formats(formats: &[AssetFormat]) {
 /// binary manifest parser. It is the first end-to-end path from an asset id to
 /// "what to fetch".
 async fn resolve(config: &Config, args: ResolveArgs) -> Result<()> {
-    let client = FabClient::from_config(config)?;
+    let client = signed_in_client(config).await?;
     let criteria = args.select.criteria();
-    let (_format_code, manifest) = resolve_manifest(&client, &args.asset_id, &criteria).await?;
-    print_manifest(&manifest, args.chunks);
+    let resolved = assetcraft_transfer::resolve(&client, &args.asset_id, &criteria).await?;
+
+    println!("Format:   {}", resolved.format);
+    println!(
+        "File:     {} ({})",
+        resolved.file.as_deref().unwrap_or("-"),
+        resolved.file_id
+    );
+    println!("Artifact: {}", resolved.artifact);
+    print_manifest(&resolved.manifest, args.chunks);
     Ok(())
 }
 
-/// Select a format and file, fetch the signed download info, and parse the
-/// manifest. Shared by `resolve` and `download`.
-async fn resolve_manifest(
-    client: &FabClient,
-    asset_id: &str,
-    criteria: &SelectionCriteria,
-) -> Result<(String, Manifest)> {
-    let formats = client
-        .listing_formats(&AssetId::new(asset_id))
+/// A client carrying the stored account's token.
+///
+/// Signed download info is tied to the account that owns the asset, so the
+/// catalog, resolve, and download commands all need this.
+async fn signed_in_client(config: &Config) -> Result<FabClient> {
+    let auth = EpicAuth::from_config(config)?;
+    let store = FileTokenStore::new(config.paths.token_file());
+    let token = ensure_fresh_token(&auth, &store)
         .await
-        .context("could not load asset formats")?;
-
-    let chosen = assetcraft_core::select(&formats, criteria).context("selection failed")?;
-    let format_code = chosen
-        .format_code
-        .clone()
-        .context("the selected format has no code to request download info with")?;
-    let file_id = chosen
-        .file_id()
-        .map(str::to_string)
-        .context("the selected file has no id to request download info with")?;
-
-    println!("Format:   {format_code}");
-    println!(
-        "File:     {} ({file_id})",
-        chosen.file.name.as_deref().unwrap_or("-")
-    );
-
-    let info = client
-        .download_info(asset_id, &format_code, &file_id)
-        .await
-        .context("could not resolve download info")?;
-    println!("Artifact: {}", info.artifact_id);
-    if info.distribution_points.is_empty() {
-        anyhow::bail!("Fab returned no distribution points for this file");
-    }
-
-    // Distribution points are mirrors; use the first one whose manifest parses.
-    let mut last_error = None;
-    for point in &info.distribution_points {
-        let bytes = match client.fetch_bytes(&point.manifest_url).await {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                last_error = Some(anyhow::Error::new(err).context("manifest could not be fetched"));
-                continue;
-            }
-        };
-        match Manifest::parse(&bytes) {
-            Ok(manifest) => return Ok((format_code, manifest)),
-            Err(err) => {
-                last_error = Some(anyhow::Error::new(err).context("manifest could not be parsed"));
-            }
-        }
-    }
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no distribution point produced a manifest")))
+        .context("not signed in; run `assetcraft login` first")?;
+    Ok(FabClient::from_config(config)?.with_token(token.authorization_header()))
 }
 
 /// Download an owned asset's chunks, reassemble its files, and verify them.
 ///
-/// The chunk base URL is not derivable from the manifest, so it is passed in;
-/// once a real signed-in response confirms how Fab pairs it with the manifest,
-/// this can be filled in automatically.
+/// The transfer itself lives in `assetcraft-transfer`, which the GUI uses too;
+/// this command supplies the output directory and chunk base, then records
+/// where the files landed. With no `--output` the files go back to the
+/// location the library holds for the asset — or, the first time, to the
+/// standard asset directory — so re-downloading takes only the asset id. With
+/// no `--chunk-base` the base is the manifest URL's directory, which
+/// `assetcraft-transfer` takes from the signed download-info response.
 async fn download(config: &Config, args: DownloadArgs) -> Result<()> {
-    let client = FabClient::from_config(config)?;
-    let criteria = args.select.criteria();
-    let (format_code, manifest) = resolve_manifest(&client, &args.asset_id, &criteria).await?;
+    let client = signed_in_client(config).await?;
+    let library =
+        Library::open(config.paths.library_file()).context("could not open the local library")?;
+    let recorded = library
+        .download(&AssetId::new(&args.asset_id))
+        .context("could not read the library")?;
+
+    let (output, source) = download_output(args.output, recorded, &config.paths, &args.asset_id);
+    match source {
+        OutputSource::Flag => {}
+        OutputSource::Recorded => println!(
+            "Re-downloading to the location the library recorded: {}",
+            output.display()
+        ),
+        OutputSource::Standard => println!(
+            "First download: writing to the standard asset directory: {}",
+            output.display()
+        ),
+    }
+
+    let request = assetcraft_transfer::Request {
+        asset_id: args.asset_id.clone(),
+        output,
+        chunk_base: args.chunk_base.clone(),
+        criteria: args.select.criteria(),
+        options: DownloadOptions {
+            max_attempts: args.attempts,
+            concurrency: args
+                .concurrency
+                .unwrap_or_else(|| DownloadOptions::default().concurrency),
+            bandwidth: args.limit.map(BandwidthLimit::new),
+            ..Default::default()
+        },
+    };
+
+    // Announce the batch once; progress fires per chunk.
+    let announced = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let acquired = assetcraft_transfer::acquire(&client, &request, move |phase| {
+        if let Phase::Download {
+            files_total,
+            bytes_total,
+            ..
+        } = phase
+        {
+            if !announced.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("{files_total} chunks ({bytes_total} bytes to download).");
+            }
+        }
+    })
+    .await?;
 
     println!(
-        "{} files, {} chunks ({} bytes to download).",
-        manifest.files.len(),
-        manifest.chunks.len(),
-        manifest.total_download_size()
+        "Wrote {} files ({} bytes) to {}.",
+        acquired.files,
+        acquired.bytes,
+        acquired.path.display()
     );
-
-    // Chunks land in a scratch directory beside the output, then are removed.
-    let scratch = args.output.join(".assetcraft-chunks");
-    std::fs::create_dir_all(&scratch).context("could not create the scratch directory")?;
-
-    let chunk_files: Vec<DownloadFile> = manifest
-        .chunk_downloads(&args.chunk_base)
-        .into_iter()
-        .map(|chunk| DownloadFile {
-            url: chunk.url,
-            destination: scratch.join(format!("{}.chunk", chunk.guid)),
-            size: Some(chunk.size_bytes),
-            sha256: None,
-        })
-        .collect();
-
-    let options = DownloadOptions {
-        max_attempts: args.attempts,
-        concurrency: args
-            .concurrency
-            .unwrap_or_else(|| DownloadOptions::default().concurrency),
-        bandwidth: args.limit.map(BandwidthLimit::new),
-        ..Default::default()
-    };
-    let downloader = Downloader::with_default_client(options)?;
-    let outcomes = downloader
-        .download_all(chunk_files, |progress| {
-            if progress.bytes_total == Some(progress.bytes_done) {
-                eprintln!("  fetched chunk {}/{}", progress.index + 1, progress.total);
-            }
-        })
-        .await
-        .context("chunk download failed")?;
-
-    let mut store = ChunkStore::new();
-    for outcome in &outcomes {
-        let bytes =
-            std::fs::read(&outcome.destination).context("could not read a downloaded chunk")?;
-        store
-            .insert_file(&bytes)
-            .context("could not decode a downloaded chunk")?;
-    }
-
-    let files = manifest
-        .assemble(&store)
-        .context("could not reassemble the asset")?;
-    for file in &files {
-        let path = safe_join(&args.output, &file.filename)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).context("could not create a directory")?;
-        }
-        std::fs::write(&path, &file.data)
-            .with_context(|| format!("could not write {}", path.display()))?;
-    }
-
-    let _ = std::fs::remove_dir_all(&scratch);
-    println!("Wrote {} files to {}.", files.len(), args.output.display());
 
     // Record where the files landed so `export` can find them again by id with
     // the network off. The path is stored absolute, so the record survives a
-    // different working directory.
-    let stored = std::fs::canonicalize(&args.output).unwrap_or_else(|_| args.output.clone());
-    let library =
-        Library::open(config.paths.library_file()).context("could not open the local library")?;
+    // different working directory. Re-recording is what keeps a re-download's
+    // default output pointing at the newest files.
     library
-        .record_download(&AssetId::new(&args.asset_id), &stored, &format_code)
+        .record_download(
+            &AssetId::new(&args.asset_id),
+            &acquired.path,
+            &acquired.format,
+        )
         .context("could not record the download in the library")?;
     println!(
         "Recorded it in the library — re-export offline with: assetcraft export {} --target <dir>",
@@ -873,17 +840,34 @@ async fn download(config: &Config, args: DownloadArgs) -> Result<()> {
     Ok(())
 }
 
-/// Join a manifest path onto the output root, refusing anything that escapes.
-fn safe_join(root: &Path, name: &str) -> Result<PathBuf> {
-    let relative = Path::new(name);
-    let escapes = relative.is_absolute()
-        || relative
-            .components()
-            .any(|part| matches!(part, std::path::Component::ParentDir));
-    if escapes {
-        anyhow::bail!("the manifest lists a path outside the output directory: {name:?}");
+/// Why `download` writes where it writes.
+#[derive(Debug, PartialEq, Eq)]
+enum OutputSource {
+    /// `--output` named the directory.
+    Flag,
+    /// The library's recorded download location for the asset.
+    Recorded,
+    /// The standard per-asset directory under the data directory.
+    Standard,
+}
+
+/// Where a download's files land: `--output` wins; otherwise the directory the
+/// library recorded for the asset — even when its files are gone, so a
+/// re-download restores them where `export` already looks; otherwise the
+/// standard asset directory, the same home the GUI downloads into.
+fn download_output(
+    requested: Option<PathBuf>,
+    recorded: Option<Download>,
+    paths: &Paths,
+    asset_id: &str,
+) -> (PathBuf, OutputSource) {
+    if let Some(output) = requested {
+        return (output, OutputSource::Flag);
     }
-    Ok(root.join(relative))
+    if let Some(record) = recorded.filter(|record| !record.path.as_os_str().is_empty()) {
+        return (record.path, OutputSource::Recorded);
+    }
+    (paths.asset_dir(asset_id), OutputSource::Standard)
 }
 
 /// Lay an asset's downloaded files out for a DCC and write the import script.
@@ -1153,5 +1137,75 @@ mod tests {
         assert!(parse_rate("fast").is_err());
         assert!(parse_rate("0").is_err());
         assert!(parse_rate("-5k").is_err());
+    }
+
+    #[test]
+    fn download_accepts_a_bare_asset_id() {
+        // What makes a re-download straight from the library possible: the
+        // output and the chunk base are both optional now.
+        let cli = Cli::try_parse_from(["assetcraft", "download", "an-asset-id"]).unwrap();
+        let Command::Download(args) = cli.command else {
+            panic!("expected the download command");
+        };
+        assert_eq!(args.asset_id, "an-asset-id");
+        assert_eq!(args.output, None);
+        assert_eq!(args.chunk_base, None);
+    }
+
+    #[test]
+    fn download_still_accepts_its_overrides() {
+        let cli = Cli::try_parse_from([
+            "assetcraft",
+            "download",
+            "an-asset-id",
+            "--output",
+            "/tmp/out",
+            "--chunk-base",
+            "https://cdn.example.com/CloudDir",
+        ])
+        .unwrap();
+        let Command::Download(args) = cli.command else {
+            panic!("expected the download command");
+        };
+        assert_eq!(args.output, Some(PathBuf::from("/tmp/out")));
+        assert_eq!(
+            args.chunk_base.as_deref(),
+            Some("https://cdn.example.com/CloudDir")
+        );
+    }
+
+    #[test]
+    fn download_output_prefers_the_flag_then_the_record_then_the_default() {
+        let paths = Paths::rooted_at("/tmp/assetcraft-cli-test");
+        let recorded = Download {
+            path: PathBuf::from("/data/where-it-landed"),
+            format: "fbx".to_string(),
+        };
+
+        let (output, source) = download_output(
+            Some(PathBuf::from("/tmp/hand")),
+            Some(recorded.clone()),
+            &paths,
+            "a",
+        );
+        assert_eq!(output, PathBuf::from("/tmp/hand"));
+        assert_eq!(source, OutputSource::Flag);
+
+        let (output, source) = download_output(None, Some(recorded), &paths, "a");
+        assert_eq!(output, PathBuf::from("/data/where-it-landed"));
+        assert_eq!(source, OutputSource::Recorded);
+
+        let (output, source) = download_output(None, None, &paths, "a");
+        assert_eq!(output, paths.asset_dir("a"));
+        assert_eq!(source, OutputSource::Standard);
+
+        // A record with no usable path is treated as no record.
+        let blank = Download {
+            path: PathBuf::new(),
+            format: String::new(),
+        };
+        let (output, source) = download_output(None, Some(blank), &paths, "a");
+        assert_eq!(output, paths.asset_dir("a"));
+        assert_eq!(source, OutputSource::Standard);
     }
 }

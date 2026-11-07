@@ -130,10 +130,11 @@ headless CLI.
 | `assetcraft-auth` | lib | Epic/Fab OAuth device flow and secure token storage (OS keyring). |
 | `assetcraft-catalog` | lib | Fab API client: search, filters, metadata, and response cache. |
 | `assetcraft-download` | lib | Concurrent, resumable download engine with integrity checks, manifest and chunk parsing, and reassembly. |
+| `assetcraft-transfer` | lib | Resolves an owned asset and brings it down: formats → signed download info → manifest → chunks → verified files. |
 | `assetcraft-library` | lib | Local SQLite library index, thumbnails, dedup, offline browse. |
 | `assetcraft-dcc-blender` | adapter | Blender exporter and Python addon bridge. |
 | `assetcraft-cli` | bin | Headless binary for scripted / CI workflows. |
-| `assetcraft-gui` | bin | egui desktop app: browse, search, filter, and open asset details. |
+| `assetcraft-gui` | bin | egui desktop app: browse, search, filter, download, and browse the local library. |
 
 Dependency direction is one-way: binaries depend on the service and core crates,
 never the reverse. DCC adapters are pure over local files: they read the source
@@ -197,8 +198,9 @@ assetcraft formats <asset-id> --format fbx --quality 4K --prefer largest
 assetcraft resolve <asset-id> --format fbx --quality 4K --chunks
 
 # Download and reassemble it, verifying every file (requires sign-in).
-# The CDN base the chunk paths hang off is passed in with --chunk-base until a
-# real signed-in response confirms how Fab supplies it.
+# The CDN base the chunk paths hang off is taken from the manifest URL in the
+# signed download-info response; pass --chunk-base to override it, and --output
+# to write somewhere other than the standard asset directory.
 assetcraft download <asset-id> --format fbx --quality 4K \
   --output ./Downloads --chunk-base https://cdn.example.com/CloudDir
 
@@ -212,6 +214,10 @@ assetcraft library --verify
 
 # Cache thumbnails so the library browses offline
 assetcraft library --thumbnails
+
+# Re-download straight from the library: with no flags, the asset comes back
+# down to the location the library recorded for it (requires sign-in).
+assetcraft download <asset-id>
 
 # Lay a downloaded asset out as a Blender PBR material and write an import
 # script. `download` records where the files landed, so with no --source the
@@ -306,6 +312,7 @@ assetcraft/
 │   ├── assetcraft-auth/        # Fab OAuth + token storage
 │   ├── assetcraft-catalog/     # Fab API client + metadata cache
 │   ├── assetcraft-download/    # download engine
+│   ├── assetcraft-transfer/    # resolve + download + assemble one asset
 │   ├── assetcraft-library/     # local library index
 │   ├── assetcraft-dcc-blender/ # Blender exporter
 │   ├── assetcraft-cli/         # headless binary

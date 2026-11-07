@@ -22,11 +22,13 @@
 //!   chunk file and splice the chunk parts back into the files the manifest
 //!   describes, checking each file against its SHA-1.
 //!
-//! What is **not** automated: the CDN base URL Fab pairs with the manifest. The
-//! manifest carries each chunk's relative path but not its host, and how Fab
-//! supplies the base can only be confirmed against a real signed-in response, so
+//! What is **not** confirmed: the CDN base URL Fab pairs with the manifest. The
+//! manifest carries each chunk's relative path but not its host, and the pairing
+//! can only be confirmed against a real signed-in response, so
 //! [`Manifest::chunk_downloads`] joins a base you supply with each chunk's
-//! documented path; the CLI takes it as `--chunk-base`.
+//! documented path. The default is the manifest URL's own directory, derived by
+//! `assetcraft-transfer` from the signed download-info response; the CLI's
+//! `--chunk-base` overrides it while that confirmation is pending.
 
 mod assemble;
 pub mod bandwidth;

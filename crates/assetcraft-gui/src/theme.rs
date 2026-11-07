@@ -19,6 +19,8 @@ pub const FG_SECONDARY: Color32 = Color32::from_rgb(182, 180, 176);
 pub const FG_MUTED: Color32 = Color32::from_rgb(110, 110, 110);
 /// Download, progress, FREE badge.
 pub const GREEN: Color32 = Color32::from_rgb(145, 183, 89);
+/// Errors and failed downloads.
+pub const RED: Color32 = Color32::from_rgb(226, 128, 128);
 /// Primary buttons and links.
 pub const BLUE: Color32 = Color32::from_rgb(79, 164, 227);
 /// The `NEW` pill and wizard highlight.

@@ -12,6 +12,7 @@ use assetcraft_auth::{ensure_fresh_token, DefaultTokenStore, EpicAuth, EpicToken
 use assetcraft_catalog::FabClient;
 use assetcraft_core::{
     AssetDetail, AssetId, AssetSummary, Config, LibraryItem, Page, SearchQuery, SelectionCriteria,
+    Settings,
 };
 use assetcraft_library::{Library, MediaCache};
 use tokio::sync::{mpsc, Semaphore};
@@ -334,9 +335,14 @@ async fn run(
                 let config = config.clone();
                 let id = item.asset_id.clone();
                 tokio::spawn(async move {
+                    // Where the files land is the user's choice, read at the
+                    // point of use; a settings file too broken to read falls
+                    // back to the standard directory, and the app has already
+                    // said so in its banner.
+                    let settings = Settings::load(&config.paths).unwrap_or_default();
                     let request = assetcraft_transfer::Request {
                         asset_id: id.clone(),
-                        output: config.paths.asset_dir(&id),
+                        output: settings.asset_dir_for(&config.paths, &id),
                         chunk_base: std::env::var("ASSETCRAFT_CHUNK_BASE").ok(),
                         criteria: SelectionCriteria {
                             quality,

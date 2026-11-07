@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use directories::ProjectDirs;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
@@ -83,6 +84,11 @@ impl Paths {
     pub fn asset_dir(&self, asset_id: &str) -> PathBuf {
         self.assets_dir().join(asset_id)
     }
+
+    /// The user's own choices, as a TOML file beside the other config.
+    pub fn settings_file(&self) -> PathBuf {
+        self.config_dir.join("settings.toml")
+    }
 }
 
 /// Everything needed to talk to the outside world and to store local state.
@@ -137,6 +143,74 @@ impl Config {
     }
 }
 
+/// The user's own choices, persisted as TOML in [`Paths::settings_file`].
+///
+/// This is the settings file the README's configuration table promised, with
+/// the format it assumed: TOML. Every field is optional — the file describes
+/// departures from the defaults, not a full description of the app — and both
+/// binaries read it at the point of use, so a change takes effect for the next
+/// download without either program being restarted or notified.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    /// Quality tier wanted by default, as the app's resolution picker words
+    /// it (`2K`, `4K`, `8K`, `16K`); matched against file names the same way
+    /// `--quality` is. `None` means "whatever the asset offers first".
+    pub default_quality: Option<String>,
+    /// Where downloads land, one directory per asset id under this root.
+    /// `None` means [`Paths::assets_dir`]: the standard place.
+    pub download_dir: Option<PathBuf>,
+}
+
+impl Settings {
+    /// Read the settings file.
+    ///
+    /// A missing file is not a failure — settings are what the user chose, and
+    /// a user who chose nothing has chosen the defaults. A file that exists but
+    /// cannot be understood is reported, never silently ignored: defaulting
+    /// around a typo would quietly undo the user's choices.
+    pub fn load(paths: &Paths) -> Result<Self> {
+        let path = paths.settings_file();
+        match std::fs::read_to_string(&path) {
+            Ok(text) => toml::from_str(&text).map_err(|error| {
+                Error::Config(format!(
+                    "{} is not readable settings: {error}. Fix or delete the file.",
+                    path.display()
+                ))
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(Error::Config(format!(
+                "could not read {}: {error}",
+                path.display()
+            ))),
+        }
+    }
+
+    /// Write the settings file, creating the config directory if needed.
+    pub fn save(&self, paths: &Paths) -> Result<()> {
+        let path = paths.settings_file();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let text = toml::to_string_pretty(self)
+            .map_err(|error| Error::Config(format!("could not render settings: {error}")))?;
+        std::fs::write(&path, text)?;
+        Ok(())
+    }
+
+    /// Where one asset's files belong: the chosen root, or the standard one.
+    ///
+    /// Resolution order deliberately stops at the *record* first for
+    /// re-downloads (the CLI prefers the recorded path): this answers only
+    /// "where do files for a new asset go".
+    pub fn asset_dir_for(&self, paths: &Paths, asset_id: &str) -> PathBuf {
+        match self.download_dir.as_deref() {
+            Some(dir) => dir.join(asset_id),
+            None => paths.asset_dir(asset_id),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +247,73 @@ mod tests {
         assert_eq!(
             paths.asset_dir("rock-1"),
             PathBuf::from("/tmp/assetcraft-test/data/assets/rock-1")
+        );
+        assert_eq!(
+            paths.settings_file(),
+            PathBuf::from("/tmp/assetcraft-test/config/settings.toml")
+        );
+    }
+
+    #[test]
+    fn settings_round_trip_through_toml() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths::rooted_at(root.path());
+        let settings = Settings {
+            default_quality: Some("4K".to_string()),
+            download_dir: Some(PathBuf::from("/media/assets")),
+        };
+        settings.save(&paths).unwrap();
+        // The file says what it is, and stays hand-editable.
+        let text = std::fs::read_to_string(paths.settings_file()).unwrap();
+        assert!(text.contains("default_quality"), "{text}");
+        assert_eq!(Settings::load(&paths).unwrap(), settings);
+    }
+
+    #[test]
+    fn a_partial_or_missing_settings_file_is_the_defaults() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths::rooted_at(root.path());
+        // Nothing on disk at all: defaults, not an error.
+        assert_eq!(Settings::load(&paths).unwrap(), Settings::default());
+
+        // One field set is enough: the rest keeps its default. `#[serde
+        // (default)]` is what makes the file a list of departures rather
+        // than a full description the app demands.
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        std::fs::write(paths.settings_file(), "default_quality = \"8K\"\n").unwrap();
+        let loaded = Settings::load(&paths).unwrap();
+        assert_eq!(loaded.default_quality.as_deref(), Some("8K"));
+        assert_eq!(loaded.download_dir, None);
+    }
+
+    #[test]
+    fn a_corrupt_settings_file_is_reported_not_defaulted_around() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths::rooted_at(root.path());
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        std::fs::write(paths.settings_file(), "default_quality = ").unwrap();
+        let error = Settings::load(&paths).unwrap_err().to_string();
+        // The message names the file and says what to do: a silent default
+        // would undo the user's choices with no clue why they came back.
+        assert!(error.contains("settings.toml"), "{error}");
+        assert!(error.contains("Fix or delete"), "{error}");
+    }
+
+    #[test]
+    fn asset_dirs_follow_the_chosen_root() {
+        let paths = Paths::rooted_at("/tmp/assetcraft-test");
+        assert_eq!(
+            Settings::default().asset_dir_for(&paths, "rock-1"),
+            paths.asset_dir("rock-1"),
+            "no choice, no change"
+        );
+        let settings = Settings {
+            download_dir: Some(PathBuf::from("/media/assets")),
+            ..Settings::default()
+        };
+        assert_eq!(
+            settings.asset_dir_for(&paths, "rock-1"),
+            PathBuf::from("/media/assets/rock-1")
         );
     }
 

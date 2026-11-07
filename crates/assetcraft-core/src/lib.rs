@@ -10,7 +10,7 @@ pub mod model;
 pub mod selection;
 pub mod structure;
 
-pub use config::{Config, Paths};
+pub use config::{Config, Paths, Settings};
 pub use error::{status_error, Error, Result};
 pub use model::{
     AssetDetail, AssetFile, AssetFormat, AssetId, AssetImage, AssetSummary, Category,

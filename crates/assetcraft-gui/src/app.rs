@@ -33,6 +33,17 @@ pub enum Source {
     Demo,
 }
 
+/// Bridge's first-window rule: the marketplace views wait for a session.
+/// Signed out, the grid holds nothing and a panel says what fills it — the
+/// way Bridge opens on an empty window rather than a shelf of store data.
+/// The local views never wait: they show the user's own disk and library,
+/// not the store.
+fn store_locked(source: Source, account: &Option<Account>, view: View) -> bool {
+    source == Source::Live
+        && account.is_none()
+        && matches!(view, View::Home | View::Free | View::Purchased)
+}
+
 /// A download in the drawer.
 /// Where a download has got to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -286,7 +297,12 @@ impl App {
             app.source = Source::Demo;
         }
 
-        app.start_search(&cc.egui_ctx);
+        // Bridge parity: the store opens empty and fills only once a session
+        // has landed (or the demo was asked for) — the first window shows no
+        // listings, and the sign-in panel says what unlocks them.
+        if app.source == Source::Demo {
+            app.start_search(&cc.egui_ctx);
+        }
         app
     }
 
@@ -395,6 +411,16 @@ impl App {
             self.loading = false;
             self.cards = data::demo_cards();
             self.selected = None;
+            return;
+        }
+
+        if store_locked(self.source, &self.account, self.view) {
+            // No session, no store: the generation bump above already voids
+            // any page in flight, and the grid panel explains the emptiness.
+            self.loading = false;
+            self.cards.clear();
+            self.selected = None;
+            ctx.request_repaint();
             return;
         }
 
@@ -613,8 +639,13 @@ impl App {
                 }
                 Event::Session(account) => {
                     self.account = account;
-                    // The view may have opened before the session landed.
-                    if self.account.is_some() && self.view == View::Purchased && !self.owned_loaded
+                    // A session landing is what unlocks the store: a saved
+                    // login fills the empty first window, and the view may
+                    // have opened before the session did.
+                    if self.account.is_some()
+                        && self.source == Source::Live
+                        && (matches!(self.view, View::Home | View::Free)
+                            || (self.view == View::Purchased && !self.owned_loaded))
                     {
                         self.start_search(ctx);
                     }
@@ -627,7 +658,11 @@ impl App {
                             self.sign_in_open = false;
                             self.sign_in_code.clear();
                             self.sign_in_error = None;
-                            if self.view == View::Purchased {
+                            // Signing in is the unlock: load the store the
+                            // empty window was waiting for.
+                            if self.source == Source::Live
+                                && matches!(self.view, View::Home | View::Free | View::Purchased)
+                            {
                                 self.start_search(ctx);
                             }
                         }
@@ -639,7 +674,11 @@ impl App {
                     self.owned_cards.clear();
                     self.owned_cursor = None;
                     self.owned_loaded = false;
-                    if self.view == View::Purchased {
+                    // Signing out locks the store again: the same locked
+                    // start_search that fills it empties the window back.
+                    if self.source == Source::Live
+                        && matches!(self.view, View::Home | View::Free | View::Purchased)
+                    {
                         self.start_search(ctx);
                     }
                 }
@@ -2229,28 +2268,32 @@ impl eframe::App for App {
                     ui.add_space(6.0);
                 }
 
-                // The owned library is Fab's own list: it needs a session to
-                // ask for.
-                if self.source == Source::Live
-                    && self.view == View::Purchased
-                    && self.account.is_none()
-                {
+                // Bridge's rule for the whole store, not just Purchased:
+                // signed out, the grid is an empty window and this panel says
+                // what fills it.
+                if store_locked(self.source, &self.account, self.view) {
                     let mut open_sign_in = false;
                     ui.centered_and_justified(|ui| {
                         ui.vertical(|ui| {
-                            ui.label(
-                                egui::RichText::new("Purchased needs an Epic account")
-                                    .size(15.0)
-                                    .color(theme::FG_SECONDARY),
-                            );
-                            ui.label(
-                                egui::RichText::new(
+                            let (title, body) = if self.view == View::Purchased {
+                                (
+                                    "Purchased needs an Epic account",
                                     "Sign in to Epic to see the assets you own on Fab. Until \
                                      then, demo data shows what the shell can do.",
                                 )
-                                .size(12.0)
-                                .color(theme::FG_MUTED),
+                            } else {
+                                (
+                                    "Sign in to Epic to browse",
+                                    "The marketplace catalog loads once you sign in. Until \
+                                     then, demo data shows what the shell can do.",
+                                )
+                            };
+                            ui.label(
+                                egui::RichText::new(title)
+                                    .size(15.0)
+                                    .color(theme::FG_SECONDARY),
                             );
+                            ui.label(egui::RichText::new(body).size(12.0).color(theme::FG_MUTED));
                             ui.add_space(6.0);
                             if ui.button("Sign in to Epic").clicked() {
                                 open_sign_in = true;
@@ -2475,9 +2518,33 @@ fn strip_tags(html: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{local_cards, short_date, strip_tags};
+    use super::{local_cards, short_date, store_locked, strip_tags, Source, View};
     use assetcraft_core::LibraryItem;
     use assetcraft_library::Library;
+
+    #[test]
+    fn the_store_waits_for_a_session() {
+        use super::Account;
+        let signed_out = &None::<Account>;
+        // A stand-in session: only its presence matters to the rule.
+        let signed_in = &Some(Account {
+            name: "Tester".to_owned(),
+        });
+        // Bridge parity: signed out, the marketplace views are empty windows.
+        for view in [View::Home, View::Free, View::Purchased] {
+            assert!(store_locked(Source::Live, signed_out, view), "{view:?}");
+        }
+        // A session unlocks them; the demo dataset was asked for on purpose.
+        for view in [View::Home, View::Free, View::Purchased] {
+            assert!(!store_locked(Source::Live, signed_in, view), "{view:?}");
+        }
+        assert!(!store_locked(Source::Demo, signed_out, View::Home));
+        // What is already the user's own never waits: the library and its
+        // views work signed out.
+        for view in [View::Local, View::Collections, View::Favorites] {
+            assert!(!store_locked(Source::Live, signed_out, view), "{view:?}");
+        }
+    }
 
     #[test]
     fn the_local_view_lists_library_items_by_title() {

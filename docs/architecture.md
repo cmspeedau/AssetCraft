@@ -329,6 +329,35 @@ in principle, but a keyring needs a running secret service, which is absent in
 CI, containers, and headless Linux — so the file backend is what ships first and
 the trait keeps the swap from touching callers.
 
+### Offline and terminal-free is the plugin contract
+
+Two milestone definitions of done are product promises, and DCC integrations
+are where they are kept or broken:
+
+- *With the network disabled, previously downloaded assets are fully browsable
+  and re-exportable* (M3).
+- *A non-developer can install AssetCraft, sign in, download an asset, and
+  export it without touching a terminal* (M5).
+
+For an adapter the first halves into a hard rule: **an adapter reads local
+files and touches nothing else.** Its inputs are a source directory — by
+default the location the library recorded when the asset was downloaded — and
+its outputs are the laid-out files, the generated script, and optionally a
+hand-off to a detected editor binary. No adapter fetches bytes, resolves
+download info, or talks to a marketplace; that is `assetcraft-transfer` and
+the catalog client's job, reached through sign-in, the CLI, or the GUI's
+download queue. The pure-function shape of
+`assetcraft_dcc_blender::{plan, export, material_script}` — no client, no
+async, no network types in any signature — is what makes the rule checkable
+by reading the signature, and the shared export trait that lands with the
+second adapter (M6) carries the same constraint.
+
+The second halves into the GUI rule: every adapter exposes exactly that
+programmatic API so the desktop app can drive plan → layout → script →
+editor, and `export --dcc <tool> --run` gives the terminal user the same
+path. A plugin that only works from a console, or only with a live
+connection to fetch its inputs, does not ship.
+
 ### Login uses the authorization-code flow, not the device flow
 
 Epic's OAuth device-authorization grant is not available to the public launcher

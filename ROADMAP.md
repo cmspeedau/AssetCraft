@@ -41,11 +41,16 @@ launcher and without lock-in.
 2. **No lock-in.** Assets land in a standardized, documented folder layout; the
    local library index is portable and readable on its own.
 3. **Offline-friendly.** Anything you have cached or downloaded remains browsable
-   and re-exportable without a network connection.
+   and re-exportable without a network connection — and that is the bar for
+   every DCC integration, not only the library: an adapter that cannot export
+   from local files is not finished.
 4. **Respect the platform.** Use Fab's official APIs with the user's own account,
    honor the ToS, and never redistribute asset content.
 5. **Small and quick.** Native, low-memory, fast startup — a deliberate contrast
    to Electron-class tools.
+6. **No terminal required.** The desktop app drives every everyday path — sign
+   in, download, export — end to end, so a non-developer never has to open a
+   console. The CLI is the same engine for scripting, not a prerequisite.
 
 ## Milestones
 
@@ -208,6 +213,9 @@ Make it a product.
 - [ ] Download queue wired to the download engine.
 - [x] Local library view: assets on disk, read from the library database, with
       their paths in the detail panel.
+- [ ] Export to Blender from the app: the local library drives the M4 exporter —
+      lay out, write the script, hand it to Blender — closing the DoD's one
+      path that exists only in the CLI today.
 - [x] Owned library view: the signed-in account's Fab library, paged.
 - [ ] Collections view and settings.
 - [x] Login and account status inside the app (Epic launcher flow, token shared
@@ -256,6 +264,10 @@ them in Godot's terms.
 - [ ] An installable in-editor Godot plugin (`editor_plugin`, GDScript) for
       one-click import from inside the editor (the generated script is the
       bridge; the plugin is a follow-on, as with the Blender addon).
+- [ ] Meets the plugin contract with no new caveats: `export --dcc godot`
+      works with the network off from the source the library recorded, and the
+      GUI drives the whole path without a terminal — the same bar Blender is
+      held to (guiding principles; `docs/architecture.md`).
 
 **DoD:** `assetcraft export <asset-id> --dcc godot` produces a scene-ready,
 correctly-textured `StandardMaterial3D`/`ORMMaterial3D` in Godot.

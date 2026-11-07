@@ -141,6 +141,11 @@ impl Chunk {
         &self.data
     }
 
+    /// Take the decompressed chunk bytes by value.
+    pub fn into_data(self) -> Vec<u8> {
+        self.data
+    }
+
     /// Whether the body was zlib-compressed on the wire.
     pub fn compressed(&self) -> bool {
         self.stored_as & FLAG_COMPRESSED != 0
@@ -179,13 +184,19 @@ impl ChunkStore {
         self.chunks.insert(guid, data);
     }
 
+    /// Store a decoded chunk under its own GUID, taking the payload by value.
+    pub fn insert_chunk(&mut self, chunk: Chunk) {
+        let guid = chunk.guid;
+        self.chunks.insert(guid, chunk.into_data());
+    }
+
     /// Decode a chunk file and store its decompressed bytes under its own GUID.
     ///
     /// Returns the GUID the chunk was stored under.
     pub fn insert_file(&mut self, bytes: &[u8]) -> Result<[u32; 4]> {
         let chunk = Chunk::decode(bytes)?;
         let guid = chunk.guid;
-        self.chunks.insert(guid, chunk.data);
+        self.chunks.insert(guid, chunk.into_data());
         Ok(guid)
     }
 

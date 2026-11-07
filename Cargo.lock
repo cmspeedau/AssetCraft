@@ -434,6 +434,7 @@ dependencies = [
  "assetcraft-catalog",
  "assetcraft-core",
  "assetcraft-download",
+ "sha1",
 ]
 
 [[package]]

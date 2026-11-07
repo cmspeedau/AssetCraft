@@ -185,11 +185,12 @@ struct FormatsArgs {
 
 #[derive(Debug, Args)]
 struct StructureArgs {
-    /// Asset id to describe (as printed by `search`).
+    /// Asset id to describe (as printed by `search` or `library`).
+    ///
+    /// Either shape works: the hyphenated listing UUID from the catalog or
+    /// the bare hex id from your owned library. Fab answers through the
+    /// owned entry's artifact, which is where downloads go too.
     asset_id: String,
-
-    #[command(flatten)]
-    select: SelectionArgs,
 
     /// Describe the files already on disk, with no connection.
     ///
@@ -209,11 +210,12 @@ struct StructureArgs {
 
 #[derive(Debug, Args)]
 struct ResolveArgs {
-    /// Asset id to resolve (as printed by `search`).
+    /// Asset id to resolve (as printed by `search` or `library`).
+    ///
+    /// Fab delivers the owned Unreal build and nothing else to third
+    /// parties, so there is nothing to select: the id names the asset and
+    /// your library names the build.
     asset_id: String,
-
-    #[command(flatten)]
-    select: SelectionArgs,
 
     /// Also list every chunk that will be fetched.
     #[arg(long)]
@@ -222,11 +224,8 @@ struct ResolveArgs {
 
 #[derive(Debug, Args)]
 struct DownloadArgs {
-    /// Asset id to download (as printed by `search`).
+    /// Asset id to download (as printed by `search` or `library`).
     asset_id: String,
-
-    #[command(flatten)]
-    select: SelectionArgs,
 
     /// Directory to write the asset's files into.
     ///
@@ -238,9 +237,9 @@ struct DownloadArgs {
 
     /// Base URL the manifest's chunk paths hang off, e.g. `…/CloudDir`.
     ///
-    /// Omit it to derive the base from the directory of the manifest URL the
-    /// signed download-info response returns. Pass it only when a real
-    /// response pairs a different base with the manifest.
+    /// Omit it to use the manifest URL's own directory, which is where the
+    /// live CDN serves chunks. Pass it only to point transfers at another
+    /// server — a local test stub — which drops the CDN signature.
     #[arg(long)]
     chunk_base: Option<String>,
 
@@ -778,13 +777,13 @@ async fn structure(config: &Config, args: StructureArgs) -> Result<()> {
             )
         }
         (None, false) => {
-            let client = signed_in_client(config).await?;
-            let resolved =
-                assetcraft_transfer::resolve(&client, &args.asset_id, &args.select.criteria())
-                    .await?;
+            let (client, account_id) = signed_in_client(config).await?;
+            let (_, owned) =
+                assetcraft_transfer::owned_for(&client, &account_id, &args.asset_id).await?;
+            let resolved = assetcraft_transfer::resolve(&client, &owned).await?;
             (
                 resolved.structure,
-                format!("the manifest for the {} format", resolved.format),
+                format!("the manifest for the {} build", resolved.format),
             )
         }
     };
@@ -894,37 +893,44 @@ fn join_levels(levels: &[u32]) -> String {
 
 /// Resolve an owned asset into the chunks and files Fab's manifest describes.
 ///
-/// This composes the public format listing, the signed download info, and the
-/// binary manifest parser. It is the first end-to-end path from an asset id to
-/// "what to fetch".
+/// This composes the owned-library lookup, the artifact manifest, and the
+/// binary manifest parser. It is the first end-to-end path from an asset id
+/// to "what to fetch" — the same path `download` then walks.
 async fn resolve(config: &Config, args: ResolveArgs) -> Result<()> {
-    let client = signed_in_client(config).await?;
-    let criteria = args.select.criteria();
-    let resolved = assetcraft_transfer::resolve(&client, &args.asset_id, &criteria).await?;
+    let (client, account_id) = signed_in_client(config).await?;
+    let (_, owned) = assetcraft_transfer::owned_for(&client, &account_id, &args.asset_id).await?;
+    let resolved = assetcraft_transfer::resolve(&client, &owned).await?;
 
     println!("Format:   {}", resolved.format);
-    println!(
-        "File:     {} ({})",
-        resolved.file.as_deref().unwrap_or("-"),
-        resolved.file_id
-    );
     println!("Artifact: {}", resolved.artifact);
+    if let Some(build) = &resolved.build_version {
+        println!("Build:    {build}");
+    }
     println!("Contents: {}", resolved.structure.summary());
     print_manifest(&resolved.manifest, args.chunks);
     Ok(())
 }
 
-/// A client carrying the stored account's token.
+/// A client carrying the stored account's token, and the account id it belongs
+/// to.
 ///
-/// Signed download info is tied to the account that owns the asset, so the
-/// catalog, resolve, and download commands all need this.
-async fn signed_in_client(config: &Config) -> Result<FabClient> {
+/// Fab answers downloads only for the account that owns the asset: the
+/// artifact manifest is posted with that account's token, and the library
+/// that names the artifact is keyed by the account id the token carries.
+async fn signed_in_client(config: &Config) -> Result<(FabClient, String)> {
     let auth = EpicAuth::from_config(config)?;
     let store = DefaultTokenStore::from_config(config);
     let token = ensure_fresh_token(&auth, &store)
         .await
         .context("not signed in; run `assetcraft login` first")?;
-    Ok(FabClient::from_config(config)?.with_token(token.authorization_header()))
+    let account_id = token
+        .account_id
+        .clone()
+        .context("the stored token has no account id; run `assetcraft login` again")?;
+    Ok((
+        FabClient::from_config(config)?.with_token(token.authorization_header()),
+        account_id,
+    ))
 }
 
 /// Download an owned asset's chunks, reassemble its files, and verify them.
@@ -934,14 +940,20 @@ async fn signed_in_client(config: &Config) -> Result<FabClient> {
 /// where the files landed. With no `--output` the files go back to the
 /// location the library holds for the asset — or, the first time, to the
 /// standard asset directory — so re-downloading takes only the asset id. With
-/// no `--chunk-base` the base is the manifest URL's directory, which
-/// `assetcraft-transfer` takes from the signed download-info response.
+/// no `--chunk-base` the base and signature are the manifest URL's own, which
+/// is how the live CDN serves chunks.
 async fn download(config: &Config, args: DownloadArgs) -> Result<()> {
-    let client = signed_in_client(config).await?;
+    let (client, account_id) = signed_in_client(config).await?;
+    // Fab delivers the Unreal build of an owned asset, and the account's
+    // library is what names that build; either id shape joins to an entry.
+    let (entry, owned) =
+        assetcraft_transfer::owned_for(&client, &account_id, &args.asset_id).await?;
     let library =
         Library::open(config.paths.library_file()).context("could not open the local library")?;
+    // Recorded downloads are keyed by the hex asset id, whatever id shape
+    // the caller typed.
     let recorded = library
-        .download(&AssetId::new(&args.asset_id))
+        .download(&AssetId::new(&owned.item_id))
         .context("could not read the library")?;
 
     let settings = Settings::load(&config.paths).context("could not read the settings")?;
@@ -950,7 +962,7 @@ async fn download(config: &Config, args: DownloadArgs) -> Result<()> {
         recorded,
         &settings,
         &config.paths,
-        &args.asset_id,
+        &owned.item_id,
     );
     match source {
         OutputSource::Flag => {}
@@ -968,18 +980,10 @@ async fn download(config: &Config, args: DownloadArgs) -> Result<()> {
         ),
     }
 
-    let mut criteria = args.select.criteria();
-    // The settings quality applies where no flag chose one: flags are always
-    // the louder voice, and `--quality ""` still clears the file's answer.
-    if criteria.quality.is_none() {
-        criteria.quality = settings.default_quality.clone();
-    }
-
     let request = assetcraft_transfer::Request {
-        asset_id: args.asset_id.clone(),
+        owned: owned.clone(),
         output,
         chunk_base: args.chunk_base.clone(),
-        criteria,
         options: DownloadOptions {
             max_attempts: args.attempts,
             concurrency: args
@@ -1018,13 +1022,18 @@ async fn download(config: &Config, args: DownloadArgs) -> Result<()> {
         args.asset_id
     );
 
-    // Record where the files landed so `export` can find them again by id with
-    // the network off. The path is stored absolute, so the record survives a
-    // different working directory. Re-recording is what keeps a re-download's
-    // default output pointing at the newest files.
+    // Record the library entry and where its files landed, so `export` can
+    // find them again by id with the network off. Both are keyed by the hex
+    // asset id — the id the library and the download record share, whatever
+    // shape the caller typed. The path is stored absolute, so the record
+    // survives a different working directory. Re-recording is what keeps a
+    // re-download's default output pointing at the newest files.
+    library
+        .insert(&entry)
+        .context("could not store the library entry")?;
     library
         .record_download(
-            &AssetId::new(&args.asset_id),
+            &AssetId::new(&owned.item_id),
             &acquired.path,
             &acquired.format,
         )

@@ -22,13 +22,14 @@
 //!   chunk file and splice the chunk parts back into the files the manifest
 //!   describes, checking each file against its SHA-1.
 //!
-//! What is **not** confirmed: the CDN base URL Fab pairs with the manifest. The
-//! manifest carries each chunk's relative path but not its host, and the pairing
-//! can only be confirmed against a real signed-in response, so
-//! [`Manifest::chunk_downloads`] joins a base you supply with each chunk's
-//! documented path. The default is the manifest URL's own directory, derived by
-//! `assetcraft-transfer` from the signed download-info response; the CLI's
-//! `--chunk-base` overrides it while that confirmation is pending.
+//! What **is** confirmed against the live API: the base URL is the directory
+//! of the signed manifest URL (the `…/CloudDir/` tree), and every chunk URL
+//! must replay that URL's query string — the CDN signs the whole tree with
+//! the one signature, and refuses unsigned chunks. A chunk must also be
+//! fetched *without* the bearer token: an `Authorization` header on a CDN
+//! chunk gets Akamai's 501. [`Manifest::chunk_downloads`] takes the base and
+//! the query; `assetcraft-transfer` derives both from the manifest URL, and
+//! the CLI's `--chunk-base` overrides the base while leaving the query empty.
 
 mod assemble;
 pub mod bandwidth;

@@ -3,14 +3,40 @@
 //! These mirror the shape Fab actually returns and are kept separate from the
 //! domain model in [`assetcraft_core`] so that upstream changes only ripple
 //! through [`crate::convert`]. Fields are permissive (`Option`/`#[serde(default)]`)
-//! because Fab omits keys freely.
+//! because Fab omits keys freely — and omits them *as `null`* as often as not:
+//! a format with no files yet answers `"files": null`, an extension list
+//! answers `"extensions": null`. A `null` where a list or a bool was expected
+//! deserialises to empty or false (`null_to_empty`, `null_to_false`); refusing
+//! it is how a signed-in first real download died on Fab answering honestly
+//! about an asset whose Unreal files carry no size.
 
 use serde::Deserialize;
+
+/// A `Vec` field Fab may answer with `null` rather than omit: read it as
+/// empty. `#[serde(default)]` covers a *missing* key but chokes on a present
+/// `null`, and the live API sends both. Refusing the null is how a signed-in
+/// first real download died: the formats page for an Unreal asset carries
+/// `"platformsIncluded": null`, and the app had never seen one before.
+fn null_to_empty<'de, D, T>(deserializer: D) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+/// A `bool` field Fab may answer with `null`: read it as false.
+fn null_to_false<'de, D>(deserializer: D) -> std::result::Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<bool>::deserialize(deserializer)?.unwrap_or(false))
+}
 
 /// Response body of `GET /i/listings/search`.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct SearchResults {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     pub results: Vec<SearchListing>,
     pub count: Option<u64>,
     pub cursors: Option<Cursors>,
@@ -32,16 +58,16 @@ pub struct SearchListing {
     pub listing_type: Option<String>,
     pub user: Option<User>,
     pub category: Option<Category>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_false")]
     pub is_mature: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_false")]
     pub is_free: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_false")]
     pub is_discounted: bool,
     pub published_at: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     pub tags: Vec<Tag>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     pub thumbnails: Vec<Thumbnail>,
     pub ratings: Option<Ratings>,
 }
@@ -59,13 +85,13 @@ pub struct ListingDetail {
     pub created_at: Option<String>,
     pub published_at: Option<String>,
     pub review_count: Option<u64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_false")]
     pub is_mature: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_false")]
     pub is_free: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     pub tags: Vec<Tag>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     pub thumbnails: Vec<Thumbnail>,
     pub ratings: Option<Ratings>,
 }
@@ -121,7 +147,7 @@ pub struct Ratings {
 #[serde(rename_all = "camelCase")]
 pub struct ListingFormat {
     pub asset_format_type: Option<FormatType>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     pub files: Vec<FormatFile>,
 }
 
@@ -131,6 +157,7 @@ pub struct FormatType {
     pub code: Option<String>,
     pub icon: Option<String>,
     pub name: Option<String>,
+    pub extensions: Option<Vec<String>>,
 }
 
 /// A downloadable file inside a format.
@@ -141,9 +168,9 @@ pub struct FormatFile {
     pub name: Option<String>,
     pub file_size: Option<u64>,
     pub asset_type: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     pub platforms_included: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     pub engine_versions: Vec<String>,
 }
 
@@ -163,14 +190,15 @@ pub struct TagGroup {
     pub order: Option<i32>,
     pub slug: Option<String>,
     pub uid: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     pub tags: Vec<Tag>,
 }
 
 /// The `{ "results": [...] }` envelope Fab uses for some endpoints.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(bound(deserialize = "T: Deserialize<'de>"))]
 pub struct ResultsWrapper<T> {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     pub results: Vec<T>,
 }
 
@@ -178,7 +206,7 @@ pub struct ResultsWrapper<T> {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Library {
     pub cursors: Option<LibraryCursors>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     pub results: Vec<LibraryAsset>,
 }
 
@@ -199,10 +227,23 @@ pub struct LibraryAsset {
     pub url: Option<String>,
     pub source: Option<String>,
     pub distribution_method: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     pub categories: Vec<LibraryCategory>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     pub images: Vec<LibraryImage>,
+    /// The engine builds Fab can deliver for this asset. A build's
+    /// `artifactId` is what `POST /e/artifacts/{artifactId}/manifest` takes:
+    /// the only download route Fab offers third parties for UE-format
+    /// assets. An asset with no artifact here has no download route.
+    #[serde(default, deserialize_with = "null_to_empty")]
+    pub project_versions: Vec<ProjectVersion>,
+}
+
+/// One engine build of a library asset, as `projectVersions[]`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectVersion {
+    pub artifact_id: Option<String>,
 }
 
 /// A category on a library asset.
@@ -231,8 +272,13 @@ pub struct DownloadInfo {
     pub artifact_id: Option<String>,
     pub asset_format: Option<String>,
     pub build_version: Option<String>,
-    #[serde(default)]
+    /// SHA-1 of the manifest blob the distribution points serve, hex. The
+    /// live API sends it; checking it catches a truncated CDN body.
+    pub manifest_hash: Option<String>,
+    #[serde(default, deserialize_with = "null_to_empty")]
     pub distribution_points: Vec<DistributionPoint>,
+    #[serde(default, deserialize_with = "null_to_empty")]
+    pub distribution_point_base_urls: Vec<String>,
 }
 
 /// A signed location a manifest can be fetched from.
@@ -247,7 +293,7 @@ pub struct DistributionPoint {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssetManifest {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_to_empty")]
     pub download_info: Vec<DownloadInfo>,
 }
 
@@ -380,6 +426,63 @@ mod tests {
             vec!["Windows".to_string()]
         );
         assert_eq!(formats[1].files[0].engine_versions, vec!["5.4".to_string()]);
+    }
+
+    #[test]
+    fn deserialize_listing_formats_with_live_nulls() {
+        // Captured from the live API: a real asset whose Unreal file carries
+        // no size and whose platform and engine lists are null, not absent.
+        // Refusing those nulls is what killed a signed-in first download.
+        let json = r#"[
+            {
+                "assetFormatType": {
+                    "code": "unreal-engine",
+                    "extensions": ["uasset", "uproject", "uplugin"],
+                    "icon": "unreal-engine",
+                    "name": "Unreal Engine",
+                    "groupName": "Game Engine Formats"
+                },
+                "files": [{
+                    "fileSize": null,
+                    "name": "Unreal Engine 5.6",
+                    "uid": "7c93129d-abf1-4138-b274-7d427acd4e0b",
+                    "assetType": null,
+                    "platformsIncluded": null,
+                    "initialEngineVersion": null,
+                    "engineVersions": null
+                }]
+            },
+            {
+                "assetFormatType": {
+                    "code": "uefn-source",
+                    "extensions": null,
+                    "icon": "unreal-engine",
+                    "name": "UEFN Source",
+                    "groupName": "Game Engine Formats"
+                },
+                "files": [{
+                    "fileSize": 420414054,
+                    "name": "warehouse.zip",
+                    "uid": "edfb82cc-f946-459e-8b7d-fe56e31a5537",
+                    "assetType": null,
+                    "platformsIncluded": null,
+                    "initialEngineVersion": null,
+                    "engineVersions": null
+                }]
+            }
+        ]"#;
+        let formats: Vec<ListingFormat> = serde_json::from_str(json).unwrap();
+        assert_eq!(formats.len(), 2);
+        // A null list reads as empty, not as an error and not as a missing file.
+        assert_eq!(formats[0].files.len(), 1);
+        assert_eq!(formats[0].files[0].file_size, None);
+        assert!(formats[0].files[0].platforms_included.is_empty());
+        assert!(formats[0].files[0].engine_versions.is_empty());
+        assert_eq!(formats[1].files[0].file_size, Some(420414054));
+        assert_eq!(
+            formats[1].asset_format_type.as_ref().unwrap().extensions,
+            None
+        );
     }
 
     #[test]

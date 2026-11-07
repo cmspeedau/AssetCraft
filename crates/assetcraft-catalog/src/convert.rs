@@ -204,6 +204,12 @@ pub fn library_item_from_wire(asset: wire::LibraryAsset) -> LibraryItem {
                 md5: image.md5,
             })
             .collect(),
+        // The first build that carries an artifact is the one Fab will
+        // deliver; builds without one are engine targets, not downloads.
+        artifact_id: asset
+            .project_versions
+            .into_iter()
+            .find_map(|version| version.artifact_id.filter(|id| !id.is_empty())),
     }
 }
 
@@ -213,6 +219,7 @@ pub fn download_info_from_wire(info: wire::DownloadInfo) -> DownloadInfo {
         artifact_id: info.artifact_id.unwrap_or_default(),
         asset_format: info.asset_format.unwrap_or_default(),
         build_version: info.build_version,
+        manifest_hash: info.manifest_hash,
         distribution_points: info
             .distribution_points
             .into_iter()
@@ -343,6 +350,7 @@ mod tests {
                 code: Some("fbx".to_string()),
                 name: Some("FBX".to_string()),
                 icon: None,
+                extensions: None,
             }),
             files: vec![wire::FormatFile {
                 uid: Some("f1".to_string()),
@@ -411,13 +419,19 @@ mod tests {
             artifact_id: Some("art-1".to_string()),
             asset_format: Some("fbx".to_string()),
             build_version: Some("v3".to_string()),
+            manifest_hash: Some("56773AAC1647082DB290C0373CE89D6494DC6612".to_string()),
             distribution_points: vec![wire::DistributionPoint {
                 manifest_url: "https://cdn/manifest".to_string(),
                 signature_expiration: Some("2026-10-17T00:00:00Z".to_string()),
             }],
+            distribution_point_base_urls: vec![],
         });
         assert_eq!(info.artifact_id, "art-1");
         assert_eq!(info.asset_format, "fbx");
+        assert_eq!(
+            info.manifest_hash.as_deref(),
+            Some("56773AAC1647082DB290C0373CE89D6494DC6612")
+        );
         assert_eq!(info.distribution_points.len(), 1);
         assert_eq!(
             info.distribution_points[0].manifest_url,

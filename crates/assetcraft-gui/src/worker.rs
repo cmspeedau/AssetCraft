@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use assetcraft_auth::{ensure_fresh_token, EpicAuth, EpicToken, FileTokenStore, TokenStore};
+use assetcraft_auth::{ensure_fresh_token, DefaultTokenStore, EpicAuth, EpicToken, TokenStore};
 use assetcraft_catalog::FabClient;
 use assetcraft_core::{AssetDetail, AssetId, AssetSummary, Config, LibraryItem, Page, SearchQuery};
 use assetcraft_library::MediaCache;
@@ -182,7 +182,7 @@ async fn run(
             return;
         }
     };
-    let store = FileTokenStore::new(config.paths.token_file());
+    let store = DefaultTokenStore::from_config(&config);
     // Thumbnails the download flow already cached are reused, so local library
     // cards render without a network.
     let media = MediaCache::new(config.paths.thumbnail_cache_dir());
@@ -336,7 +336,7 @@ async fn run(
 /// A refresh that fails (offline, expired refresh token) still reports the
 /// stored account: the UI should show who is signed in and let the next
 /// authenticated call surface the problem.
-async fn restore_session(auth: &EpicAuth, store: &FileTokenStore) -> Option<(Account, EpicToken)> {
+async fn restore_session(auth: &EpicAuth, store: &impl TokenStore) -> Option<(Account, EpicToken)> {
     let stored = store.load().ok().flatten()?;
     match ensure_fresh_token(auth, store).await {
         Ok(token) => Some((Account::from_token(&token), token)),

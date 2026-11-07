@@ -212,7 +212,7 @@ AssetCraft follows platform conventions for config, cache, and data directories
 | Config | Settings, default quality tier and format, DCC paths. |
 | Cache | API response cache, thumbnails, partial downloads. |
 | Data | Local library index (SQLite) and downloaded assets. |
-| Tokens | OAuth credentials, stored in the OS keyring — never on disk in plaintext. |
+| Tokens | OAuth credentials, in the OS keyring where one answers; otherwise an owner-only private file, never world-readable. |
 
 The exact file format is TBD (TOML is the working assumption).
 

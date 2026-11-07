@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use assetcraft_auth::{ensure_fresh_token, EpicAuth, FileTokenStore, TokenStore};
+use assetcraft_auth::{ensure_fresh_token, DefaultTokenStore, EpicAuth, TokenStore};
 use assetcraft_catalog::{FabClient, ResponseCache, DEFAULT_TTL};
 use assetcraft_core::{
     AssetFormat, AssetId, AssetSummary, Config, LibraryItem, Page, Preference, SearchQuery,
@@ -393,7 +393,7 @@ async fn search(config: &Config, args: SearchArgs) -> Result<()> {
 
 async fn login(config: &Config, args: LoginArgs) -> Result<()> {
     let auth = EpicAuth::from_config(config)?;
-    let store = FileTokenStore::new(config.paths.token_file());
+    let store = DefaultTokenStore::from_config(config);
 
     let Some(code) = args.code else {
         println!("Sign in to Epic Games to let AssetCraft reach your Fab library.\n");
@@ -415,7 +415,7 @@ async fn login(config: &Config, args: LoginArgs) -> Result<()> {
         Some(name) => println!("Signed in as {name}."),
         None => println!("Signed in."),
     }
-    println!("Token stored at {}.", store.path().display());
+    println!("Token stored in {}.", store.location());
     Ok(())
 }
 
@@ -491,7 +491,7 @@ async fn library(config: &Config, args: LibraryArgs) -> Result<()> {
 
     // Online: pull the whole library from Fab and record it locally.
     let auth = EpicAuth::from_config(config)?;
-    let store = FileTokenStore::new(config.paths.token_file());
+    let store = DefaultTokenStore::from_config(config);
     let token = ensure_fresh_token(&auth, &store)
         .await
         .context("not signed in; run `assetcraft login` first")?;

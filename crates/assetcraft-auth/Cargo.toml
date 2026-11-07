@@ -10,9 +10,11 @@ repository.workspace = true
 [dependencies]
 assetcraft-core.workspace = true
 chrono.workspace = true
+keyring.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 httpmock = "0.8"

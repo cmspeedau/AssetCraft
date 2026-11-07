@@ -9,7 +9,9 @@ change as we learn. See [README.md](README.md) for what the project is.
 - **M0 — Foundations:** complete.
 - **M1 — Catalog & Auth:** in progress. Public catalog reads, sign-in, token
   storage and refresh, the response cache, and the authenticated library and
-  download-info endpoints are in. The OS keyring backend remains.
+  download-info endpoints are in. The token now lives in the OS keyring where
+  one answers — the file backend remains as the fallback for CI, containers,
+  and headless Linux.
 - **M2 — Download Engine:** in progress. The transport engine (bounded
   concurrency, resumption, retries, integrity verification, a global bandwidth
   limit), the persistent queue, format and quality selection, the binary
@@ -75,8 +77,9 @@ Read the library. This is the first milestone that talks to Fab.
 
 - [x] Fab API client with search, pagination, and filters (type, category, sort,
       free/discounted, seller).
-- [x] Sign-in with Epic, storing the token behind a `TokenStore` (a private file
-      today; see `docs/architecture.md` for why the OS keyring is deferred).
+- [x] Sign-in with Epic, storing the token behind a `TokenStore` (the default
+      prefers the OS keyring and falls back to a private file; see
+      `docs/architecture.md`).
 - [x] Transparent refresh: commands resolve a usable token before calling an
       authenticated endpoint.
 - [x] On-disk response cache for public reads, with a time-to-live.
@@ -84,7 +87,10 @@ Read the library. This is the first milestone that talks to Fab.
       locations.
 - [x] Authenticated library and download-info endpoints, including the Fab CSRF
       handshake they require.
-- [ ] OS keyring token backend.
+- [x] OS keyring token backend — the default store files the token in the
+      platform credential store (Keychain, Credential Manager, the D-Bus
+      secret service) and falls back to the private file where none answers;
+      a file token is promoted into the keyring once one does.
 - [ ] Texture-map and LOD metadata (lands with the download engine, M2).
 
 > **Note on the device flow.** The original plan called for an OAuth *device

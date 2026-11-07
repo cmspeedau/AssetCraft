@@ -94,7 +94,8 @@ POST /account/api/oauth/token           Basic <launcher client id:secret>
 EpicToken                               access + refresh, with an absolute expiry
         │
         ▼
-FileTokenStore::save()                  owner-only (0600) JSON file
+DefaultTokenStore::save()               OS keyring, or an owner-only (0600)
+                                        file where no secret service answers
 ```
 
 ### Download (implemented, M2)
@@ -324,10 +325,17 @@ later want a pure-Rust build everywhere, the alternative is
 
 ### Tokens sit behind a `TokenStore` trait
 
-The default backend is a private JSON file. An OS keyring backend is preferable
-in principle, but a keyring needs a running secret service, which is absent in
-CI, containers, and headless Linux — so the file backend is what ships first and
-the trait keeps the swap from touching callers.
+The default backend (`DefaultTokenStore`) prefers the OS credential store —
+the macOS Keychain, the Windows Credential Manager, the Linux D-Bus secret
+service (over `zbus`, so there is no system build dependency) — via the
+`keyring` crate. A keyring needs a running secret service, and CI, containers,
+and headless Linux have none, so every keyring failure logs and falls back to
+the private JSON file; sign-in therefore works wherever AssetCraft runs. A
+file token read while the keyring answers cleanly is promoted into the
+keyring and deleted from disk, so the file is a fallback and never a habit.
+The trait keeps the whole question out of callers, and the store is tested
+against a keyring double — the real keychain is checked by a manually run
+`--ignored` smoke test, as it must not be written from CI.
 
 ### Login uses the authorization-code flow, not the device flow
 

@@ -1,9 +1,11 @@
 //! Blender integration.
 //!
-//! M4 builds the exporter itself — folder layout, PBR material graph, and a
-//! Python addon bridge. What is here now is the first thing that exporter needs:
-//! working out which PBR slot a texture file belongs to from its name, using
-//! the naming convention asset libraries follow, and the standard export path.
+//! M4 builds the exporter itself — folder layout, PBR material graph, a Python
+//! script that rebuilds both in Blender, and a manifest that says what an
+//! export is so the in-editor addon can find and run it. What is here now is
+//! the first thing that exporter needs: working out which PBR slot a texture
+//! file belongs to from its name, using the naming convention asset libraries
+//! follow, and the standard export path.
 
 use std::path::{Path, PathBuf};
 
@@ -11,11 +13,13 @@ use assetcraft_core::AssetId;
 
 pub mod detect;
 pub mod exporter;
+pub mod manifest;
 pub mod material;
 pub mod plan;
 pub mod script;
 
-pub use exporter::{export, ExportOptions, ExportReport};
+pub use exporter::{export, ExportOptions, ExportReport, SCRIPT_NAME};
+pub use manifest::{ExportManifest, MANIFEST_NAME, MANIFEST_VERSION};
 pub use material::{Binding, MaterialSpec, TextureMap};
 pub use plan::{plan, ExportPlan, FileKind, PlannedFile};
 pub use script::material_script;

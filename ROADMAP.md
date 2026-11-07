@@ -25,11 +25,13 @@ change as we learn. See [README.md](README.md) for what the project is.
   is recorded, so previously downloaded assets are browsable and re-exportable
   by id with the network off, and re-downloadable by id: `download` with no
   flags brings an asset back to its recorded location.
-- **M4 — Blender Export:** in progress. A Blender adapter lays an asset's files
+- **M4 — Blender Export:** complete. A Blender adapter lays an asset's files
   out in a standardized PBR tree, classifies each map into a Principled BSDF
   material graph, and writes a version-tolerant Python script; `export --run`
-  hands it to Blender, and Blender is detected per OS. An installable in-Blender
-  addon remains.
+  hands it to Blender, and Blender is detected per OS. Each export also carries
+  a manifest, and an installable in-Blender addon (`blender_addon/`) turns the
+  export folder into one-click imports from the viewport sidebar — offline,
+  with no terminal.
 
 ## Vision
 
@@ -205,8 +207,12 @@ The first real integration.
 - [x] A generated, version-tolerant Blender Python script that builds the
       materials and, unless disabled, imports the meshes into the active scene
       and assigns the material — `assetcraft export --run` hands it to Blender.
-- [ ] An installable in-Blender addon for one-click import from inside the
-      editor (the generated script is the bridge; the addon is a follow-on).
+- [x] An installable in-Blender addon for one-click import from inside the
+      editor — `blender_addon/` discovers exports through the
+      `assetcraft_export.json` manifest the exporter writes beside the script,
+      and runs that script in place (one recipe, generated once, run from the
+      terminal or the sidebar). `python3 blender_addon/package.py` builds the
+      zip Blender installs. See `blender_addon/README.md`.
 - [x] Per-OS Blender path detection (Linux, macOS, Windows, plus `PATH`).
 - [x] Export from the CLI (`assetcraft export`) and as a programmatic API
       (`assetcraft_dcc_blender::{plan, export, material_script}`).
@@ -215,11 +221,13 @@ The first real integration.
 correctly-textured material in Blender.
 
 > **Reaching the DoD.** The layout, role classification, and material graph are
-> pure and covered by tests, and the generated script is inspected by tests for
-> the sockets and imports it emits. Blender itself is not in CI, so the final
-> "does it look right in the viewport" check — and the chunk base derivation
-> still to confirm against a real signed-in response before a first download —
-> remain manual validation steps.
+> pure and covered by tests, and the generated script is both inspected (for the
+> sockets and imports it emits) and executed: the CI `addon` job builds a real
+> export with the Rust exporter, then runs its script — and the addon's
+> discovery of it — under a stub `bpy` (`blender_addon/tests/`). Blender itself
+> is not in CI, so the final "does it look right in the viewport" check — and
+> the chunk base derivation still to confirm against a real signed-in response
+> before a first download — remain manual validation steps.
 
 ### M5 — GUI & Packaging → `v1.0.0`
 

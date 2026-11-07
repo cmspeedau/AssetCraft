@@ -284,6 +284,43 @@ script fall back across Blender's renamed sockets (`Specular` → `Specular IOR
 Level`, `import_scene.obj` → `wm.obj_import`) without the planner knowing about
 any of it.
 
+The written export is three things: the files, the script, and — since the
+addon landed — a manifest beside them.
+
+### Importing from inside Blender (implemented, M4)
+
+```
+assetcraft export <id> --target dir
+        │   export() writes: files, assetcraft_export.py, assetcraft_export.json
+        ▼
+blender_addon (sidebar panel, N)
+        │
+        ├─ exports.discover(root)       walk the preference's export library,
+        │                               list every folder holding a manifest
+        ▼
+ASSETCRAFT_OT_import_export
+        │
+        └─ runpy.run_path(assetcraft_export.py)   run the export's own script
+                                                in the live session — the
+                                                same script --run hands to
+                                                blender --background
+```
+
+`assetcraft_export.json` (written by `dcc::manifest`, camelCase, `/`-separated
+export-relative paths) is the discovery and description contract: which asset
+and format this is, which meshes import, which maps make which material. The
+addon lists and describes exports from it and never opens the script — the
+script is run, not parsed. Paths in both files are export-relative; the script
+resolves them against its own directory at run time (the path baked at export
+time is only the fallback for runners that omit `__file__`), so an export
+copied or synced to another machine still imports from wherever it now lives.
+
+Verification without a Blender binary: the crate's `addon_fixture` test (run
+with `ASSETCRAFT_ADDON_FIXTURE` set) writes a real export; the addon's Python
+tests then run its script against a stub `bpy` and assert it did exactly what
+the manifest promised — same meshes, same importers, same materials, maps
+loaded from the paths the manifest named. The CI `addon` job chains the two.
+
 ### Library download tracking (implemented, M3)
 
 ```
@@ -449,6 +486,25 @@ can read, diff, and re-run by hand, and it works whether Blender is run for them
 (`export --run`) or by them. Version drift — renamed sockets, moved operators —
 is absorbed by the script looking candidates up rather than by pinning a Blender
 release in Rust.
+
+### The addon runs the generated script instead of reimplementing it
+
+The in-editor addon could build materials itself — it sits in Blender and has
+`bpy` right there. It does not. The exporter already generates the complete
+recipe per export, and a second implementation of the material graph in Python
+would be a second place for the layout to be wrong and a second thing to keep
+version-tolerant. So the addon's only Blender act is `runpy.run_path` on the
+export's own script: identical results through the terminal (`export --run`)
+and through the sidebar, and the addon keeps no material logic to drift.
+
+That leaves the question of what the addon *does* need from the export: to
+list exports and describe them without running anything. For that the exporter
+writes a manifest (`assetcraft_export.json`) beside the script, and the
+reading lives in `blender_addon/assetcraft_blender/exports.py` — deliberately
+bpy-free so the manifest contract is testable (and CI-tested) without a Blender
+to test against. The manifest is written last, after files and script, so a
+half-written export never announces itself to the panel; a manifest whose
+version the addon does not recognise is skipped rather than guessed at.
 
 ### The library stores an item as JSON, with one denormalised column
 

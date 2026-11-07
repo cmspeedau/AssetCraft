@@ -227,6 +227,11 @@ assetcraft download <asset-id>
 assetcraft export <asset-id> --target ./MyProject
 assetcraft export <asset-id> --source ./Downloads --format fbx --run
 
+# From inside Blender, no terminal needed: package the addon, install the zip,
+# point its "Export Library" preference at the --target folder, and import
+# from the viewport sidebar (N). The addon runs the export's own script.
+python3 blender_addon/package.py    # -> blender_addon/dist/assetcraft_blender.zip
+
 # Fetch a single file, resuming and verifying as it goes
 assetcraft fetch https://example.com/asset.zip --output asset.zip --sha256 <hash>
 
@@ -259,7 +264,7 @@ The exact file format is TBD (TOML is the working assumption).
 
 | Tool | Status |
 | --- | --- |
-| Blender | CLI export works (`assetcraft export`): standard PBR layout + generated import script. In-editor addon planned. |
+| Blender | CLI export works (`assetcraft export`): standard PBR layout + generated import script + machine-readable manifest. In-editor addon (`blender_addon/`) for one-click import from the viewport sidebar. |
 | Plain folder export | Available (the layout `export` writes) |
 | Godot | Planned — next DCC (roadmap M6): glTF meshes, `StandardMaterial3D`/`ORMMaterial3D` from a packed ORM texture, generated GDScript/`.tscn`. |
 | Misty Engine | Planned (roadmap M7): glTF/OBJ meshes, Standard-shader material and prefab written into the project's `Assets/` tree with GUID-stable `.meta` sidecars. |
@@ -318,6 +323,7 @@ assetcraft/
 │   ├── assetcraft-dcc-blender/ # Blender exporter
 │   ├── assetcraft-cli/         # headless binary
 │   └── assetcraft-gui/         # egui desktop app
+├── blender_addon/          # in-Blender addon (Python) and its tests
 ├── docs/                   # architecture and design notes
 ├── ROADMAP.md
 └── README.md

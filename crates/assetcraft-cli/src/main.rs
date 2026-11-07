@@ -5,14 +5,14 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use assetcraft_auth::{ensure_fresh_token, DefaultTokenStore, EpicAuth, TokenStore};
 use assetcraft_catalog::{FabClient, ResponseCache, DEFAULT_TTL};
 use assetcraft_core::{
-    AssetFormat, AssetId, AssetSummary, Config, LibraryItem, Page, Paths, Preference, SearchQuery,
-    SelectionCriteria, SortOrder,
+    AssetFormat, AssetId, AssetStructure, AssetSummary, Config, LibraryItem, Page, Paths,
+    Preference, SearchQuery, SelectionCriteria, SortOrder, TextureMap,
 };
 use assetcraft_download::{BandwidthLimit, DownloadFile, DownloadOptions, Downloader, Manifest};
 use assetcraft_library::{Download, Library, MediaCache};
@@ -38,6 +38,8 @@ enum Command {
     Fetch(FetchArgs),
     /// List an asset's downloadable formats and files.
     Formats(FormatsArgs),
+    /// Describe an asset's texture maps and levels of detail.
+    Structure(StructureArgs),
     /// Resolve an owned asset into the chunks and files to fetch (requires sign-in).
     Resolve(ResolveArgs),
     /// Download or re-download an owned asset's files and reassemble them (requires sign-in).
@@ -177,6 +179,30 @@ struct FormatsArgs {
     select: SelectionArgs,
 
     /// Print the raw JSON response instead of a summary.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct StructureArgs {
+    /// Asset id to describe (as printed by `search`).
+    asset_id: String,
+
+    #[command(flatten)]
+    select: SelectionArgs,
+
+    /// Describe the files already on disk, with no connection.
+    ///
+    /// Reads the location `download` recorded for the asset, so an asset you own
+    /// can be inspected with the network off and without signing in.
+    #[arg(long)]
+    offline: bool,
+
+    /// Describe the files in this directory rather than the recorded location.
+    #[arg(long, short)]
+    source: Option<PathBuf>,
+
+    /// Print the structure as JSON instead of a summary.
     #[arg(long)]
     json: bool,
 }
@@ -361,6 +387,7 @@ async fn main() -> Result<()> {
         Command::Library(args) => library(&config, args).await,
         Command::Fetch(args) => fetch(args).await,
         Command::Formats(args) => formats(&config, args).await,
+        Command::Structure(args) => structure(&config, args).await,
         Command::Resolve(args) => resolve(&config, args).await,
         Command::Download(args) => download(&config, args).await,
         Command::Export(args) => export_asset(&config, args),
@@ -720,6 +747,151 @@ fn print_formats(formats: &[AssetFormat]) {
     }
 }
 
+/// Describe what an asset's files contain: its texture maps and levels of detail.
+///
+/// The reading is `assetcraft-core`'s, shared with the exporters and the desktop
+/// app; what this command decides is where the file list comes from. Fab's
+/// manifest names every file the asset installs and its exact size, which is the
+/// answer for an asset you are about to download. The files a previous download
+/// left on disk give the same answer with the network off, which is what makes
+/// an owned asset inspectable offline.
+async fn structure(config: &Config, args: StructureArgs) -> Result<()> {
+    let (structure, origin) = match (&args.source, args.offline) {
+        (Some(source), _) => (
+            structure_on_disk(source)?,
+            format!("{} on disk", source.display()),
+        ),
+        (None, true) => {
+            let library = Library::open(config.paths.library_file())
+                .context("could not open the local library")?;
+            let recorded = library
+                .download(&AssetId::new(&args.asset_id))?
+                .with_context(|| {
+                    format!(
+                        "the library has no download recorded for {}; drop --offline to ask Fab",
+                        args.asset_id
+                    )
+                })?;
+            (
+                structure_on_disk(&recorded.path)?,
+                format!("{} on disk", recorded.path.display()),
+            )
+        }
+        (None, false) => {
+            let client = signed_in_client(config).await?;
+            let resolved =
+                assetcraft_transfer::resolve(&client, &args.asset_id, &args.select.criteria())
+                    .await?;
+            (
+                resolved.structure,
+                format!("the manifest for the {} format", resolved.format),
+            )
+        }
+    };
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&structure)?);
+        return Ok(());
+    }
+    print_structure(&structure, &origin);
+    Ok(())
+}
+
+/// Read an asset's texture maps and levels of detail from a directory on disk.
+///
+/// The sizes come from the files themselves, so the offline answer carries the
+/// same detail as the manifest one.
+fn structure_on_disk(root: &Path) -> Result<AssetStructure> {
+    let files = collect_files(root)
+        .with_context(|| format!("could not read the files under {}", root.display()))?;
+    if files.is_empty() {
+        bail!("no files found under {}", root.display());
+    }
+    let sized = files.into_iter().map(|relative| {
+        let size = std::fs::metadata(root.join(&relative))
+            .ok()
+            .map(|meta| meta.len());
+        (relative, size)
+    });
+    Ok(AssetStructure::from_sized(sized))
+}
+
+/// The detail behind the summary: every map by material, every mesh by level.
+fn print_structure(structure: &AssetStructure, origin: &str) {
+    println!("Source:   {origin}");
+    println!("Contents: {}", structure.summary());
+
+    if structure.is_empty() {
+        return;
+    }
+
+    if !structure.textures.is_empty() {
+        println!();
+        println!("Texture maps ({}):", structure.textures.len());
+        for material in structure.material_names() {
+            println!("  {material}:");
+            print_maps(&structure.maps_for(Some(material.as_str())));
+        }
+        let unlabelled = structure.maps_for(None);
+        if !unlabelled.is_empty() {
+            println!("  (no material in the name):");
+            print_maps(&unlabelled);
+        }
+    }
+
+    if !structure.meshes.is_empty() {
+        println!();
+        let groups = structure.mesh_groups();
+        println!("Meshes ({}):", groups.len());
+        for group in groups {
+            let files = if group.files == 1 { "file" } else { "files" };
+            let levels = if group.levels.is_empty() {
+                "no level named".to_string()
+            } else {
+                format!("levels {}", join_levels(&group.levels))
+            };
+            println!("  {} — {} {files}, {levels}", group.name, group.files);
+        }
+        if !structure.has_lods() {
+            println!(
+                "  (no mesh names a level; one may still pack its levels inside its own file)"
+            );
+        }
+    }
+
+    if !structure.other.is_empty() {
+        println!();
+        println!("Other files ({}):", structure.other.len());
+        for path in &structure.other {
+            println!("  {}", path.display());
+        }
+    }
+}
+
+/// The maps of one material, aligned by role.
+fn print_maps(maps: &[&TextureMap]) {
+    for map in maps {
+        let level = map
+            .lod_level
+            .map(|level| format!("  [level {level}]"))
+            .unwrap_or_default();
+        println!(
+            "    {:<18} {}{level}",
+            map.role.as_str(),
+            map.path.display()
+        );
+    }
+}
+
+/// Levels as a comma-separated list.
+fn join_levels(levels: &[u32]) -> String {
+    levels
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Resolve an owned asset into the chunks and files Fab's manifest describes.
 ///
 /// This composes the public format listing, the signed download info, and the
@@ -737,6 +909,7 @@ async fn resolve(config: &Config, args: ResolveArgs) -> Result<()> {
         resolved.file_id
     );
     println!("Artifact: {}", resolved.artifact);
+    println!("Contents: {}", resolved.structure.summary());
     print_manifest(&resolved.manifest, args.chunks);
     Ok(())
 }
@@ -820,6 +993,11 @@ async fn download(config: &Config, args: DownloadArgs) -> Result<()> {
         acquired.files,
         acquired.bytes,
         acquired.path.display()
+    );
+    println!(
+        "Contents: {} — detail with: assetcraft structure {} --offline",
+        acquired.structure.summary(),
+        args.asset_id
     );
 
     // Record where the files landed so `export` can find them again by id with
@@ -1211,5 +1389,73 @@ mod tests {
         let (output, source) = download_output(None, Some(blank), &paths, "a");
         assert_eq!(output, paths.asset_dir("a"));
         assert_eq!(source, OutputSource::Standard);
+    }
+
+    #[test]
+    fn structure_defaults_to_asking_fab() {
+        let cli = Cli::try_parse_from(["assetcraft", "structure", "an-asset-id"]).unwrap();
+        let Command::Structure(args) = cli.command else {
+            panic!("expected the structure command");
+        };
+        assert_eq!(args.asset_id, "an-asset-id");
+        assert!(!args.offline);
+        assert_eq!(args.source, None);
+    }
+
+    #[test]
+    fn structure_can_read_the_files_on_disk_instead() {
+        let cli = Cli::try_parse_from(["assetcraft", "structure", "a", "--offline"]).unwrap();
+        let Command::Structure(args) = cli.command else {
+            panic!("expected the structure command");
+        };
+        assert!(args.offline);
+
+        let cli =
+            Cli::try_parse_from(["assetcraft", "structure", "a", "--source", "./down"]).unwrap();
+        let Command::Structure(args) = cli.command else {
+            panic!("expected the structure command");
+        };
+        assert_eq!(args.source, Some(PathBuf::from("./down")));
+        assert!(!args.offline);
+    }
+
+    #[test]
+    fn a_downloaded_directory_describes_itself_with_the_network_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        touch(root, "meshes/SM_Rock_LOD0.fbx");
+        touch(root, "meshes/SM_Rock_LOD1.fbx");
+        touch(root, "meshes/SM_Rock_LOD2.fbx");
+        touch(root, "textures/T_Rock_BaseColor.png");
+        touch(root, "textures/T_Rock_Roughness_LOD2.png");
+        touch(root, "README.md");
+
+        let read = structure_on_disk(root).unwrap();
+        let groups = read.mesh_groups();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "SM_Rock");
+        assert_eq!(groups[0].levels, vec![0, 1, 2]);
+        assert_eq!(read.material_names(), vec!["T_Rock".to_string()]);
+        // The level token on the second map did not hide its role.
+        assert_eq!(read.textures.len(), 2);
+        assert_eq!(read.other, vec![PathBuf::from("README.md")]);
+        // Sizes come off the disk: three meshes and two maps of five bytes each,
+        // and the README is not counted because it is neither.
+        assert_eq!(read.known_size_bytes(), 25);
+    }
+
+    #[test]
+    fn a_directory_with_no_files_describes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(structure_on_disk(dir.path()).is_err());
+    }
+
+    /// A file at `relative`, with the directories above it.
+    fn touch(root: &Path, relative: &str) {
+        let path = root.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, b"bytes").unwrap();
     }
 }

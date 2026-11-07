@@ -8,6 +8,7 @@ pub mod config;
 pub mod error;
 pub mod model;
 pub mod selection;
+pub mod structure;
 
 pub use config::{Config, Paths};
 pub use error::{status_error, Error, Result};
@@ -17,3 +18,7 @@ pub use model::{
     SearchQuery, Seller, SortOrder, Tag, TagGroup,
 };
 pub use selection::{select, Preference, Selection, SelectionCriteria};
+pub use structure::{
+    classify, classify_texture, file_kind, lod_tag, without_lod_token, AssetStructure, Classified,
+    FileKind, LodTag, MeshFile, MeshGroup, TextureMap, TextureRole,
+};

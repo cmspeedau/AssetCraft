@@ -100,7 +100,13 @@ Read the library. This is the first milestone that talks to Fab.
       platform credential store (Keychain, Credential Manager, the D-Bus
       secret service) and falls back to the private file where none answers;
       a file token is promoted into the keyring once one does.
-- [ ] Texture-map and LOD metadata (lands with the download engine, M2).
+- [x] Texture-map and LOD metadata — `assetcraft-core` reads both out of the file
+      names an asset lists: a role token says which PBR slot a map fills, an
+      `LOD<n>` token says which level of detail a file belongs to.
+      `assetcraft structure <asset-id>` describes an asset from its manifest
+      before a byte is fetched, and `--offline` describes the files already on
+      disk; the same reading is what the Blender layout is planned from. See
+      `docs/architecture.md`.
 
 > **Note on the device flow.** The original plan called for an OAuth *device
 > flow*. Epic's device-authorization endpoint answers `401` for the public

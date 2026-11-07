@@ -93,13 +93,16 @@ impl Binding {
     }
 }
 
-impl TextureRole {
-    /// How a texture in this role wires into the material, if it does at all.
+impl Binding {
+    /// How a texture in `role` wires into the material, if it wires at all.
     ///
-    /// `Unknown` returns `None`: an unrecognised map is exported alongside the
-    /// others but is not guessed into the graph.
-    pub const fn binding(self) -> Option<Binding> {
-        match self {
+    /// [`TextureRole::Unknown`] returns `None`: an unrecognised map is exported
+    /// alongside the others but is not guessed into the graph.
+    ///
+    /// The role itself comes from `assetcraft-core`, which every adapter shares;
+    /// this is the Blender half of the answer, the socket a role lands on.
+    pub const fn for_role(role: TextureRole) -> Option<Binding> {
+        match role {
             TextureRole::BaseColor => Some(Binding::BaseColor),
             TextureRole::Normal => Some(Binding::Normal),
             TextureRole::Roughness => Some(Binding::Roughness),
@@ -141,21 +144,9 @@ mod tests {
 
     #[test]
     fn every_known_role_has_a_binding() {
-        let roles = [
-            TextureRole::BaseColor,
-            TextureRole::Normal,
-            TextureRole::Roughness,
-            TextureRole::Metallic,
-            TextureRole::AmbientOcclusion,
-            TextureRole::Displacement,
-            TextureRole::Opacity,
-            TextureRole::Specular,
-            TextureRole::Glossiness,
-            TextureRole::Emissive,
-        ];
-        for role in roles {
+        for role in TextureRole::ALL {
             assert!(
-                role.binding().is_some(),
+                Binding::for_role(*role).is_some(),
                 "{role:?} should wire into the graph"
             );
         }
@@ -163,18 +154,18 @@ mod tests {
 
     #[test]
     fn an_unknown_role_is_not_wired() {
-        assert_eq!(TextureRole::Unknown.binding(), None);
+        assert_eq!(Binding::for_role(TextureRole::Unknown), None);
     }
 
     #[test]
     fn glossiness_inverts_rather_than_landing_on_roughness() {
         assert_eq!(
-            TextureRole::Glossiness.binding(),
+            Binding::for_role(TextureRole::Glossiness),
             Some(Binding::InvertedRoughness)
         );
         assert_ne!(
-            TextureRole::Glossiness.binding(),
-            TextureRole::Roughness.binding()
+            Binding::for_role(TextureRole::Glossiness),
+            Binding::for_role(TextureRole::Roughness)
         );
     }
 

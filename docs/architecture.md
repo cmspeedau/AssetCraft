@@ -32,10 +32,11 @@ rather than a change to the engine.
 
 | Crate | Kind | Responsibility | Milestone |
 | --- | --- | --- | --- |
-| `assetcraft-core` | lib | Domain model, config, error type, selection | M0 |
+| `assetcraft-core` | lib | Domain model, config, error type, selection, asset structure | M0 |
 | `assetcraft-catalog` | lib | Fab API client and response cache | M1 |
 | `assetcraft-auth` | lib | Epic OAuth and token storage | M1 |
 | `assetcraft-download` | lib | Download queue, transfer engine, manifest and chunk parsing, reassembly | M2 |
+| `assetcraft-transfer` | lib | Asset id to files on disk: resolve, fetch chunks, reassemble, report contents | M2 |
 | `assetcraft-library` | lib | Local library index | M3 |
 | `assetcraft-dcc-blender` | adapter | Blender export | M4 |
 | `assetcraft-cli` | bin | Headless front end | M1 |
@@ -221,6 +222,42 @@ Selection { format_code, format_name, file }
 The chosen `file.id` is exactly what a download request needs; the step that
 turns it into bytes is asset resolution, above.
 
+### Asset structure: texture maps and LODs (implemented, M1 metadata)
+
+What a listing does *not* say is how many levels of detail a model has or which
+PBR maps it ships. The file list does, so that is what gets read.
+
+```
+assetcraft resolve <id>                manifest fetched, nothing downloaded yet
+        │
+        ▼
+Resolved.structure                     AssetStructure::from_sized(manifest files)
+        │
+        ├─ assetcraft resolve           "Contents: 5 texture maps · 1 mesh (LODs 0-2)"
+        └─ assetcraft structure <id>    the detail, per material and per level
+
+assetcraft structure <id> --offline    the same answer from a downloaded asset
+        │
+        ▼
+Library::download(&id) ──▶ collect files ──▶ AssetStructure::from_sized(paths + sizes)
+   no sign-in, no connection
+```
+
+Two naming conventions carry the information, and `assetcraft-core::structure`
+implements both: a **role token** at the end of a stem names the PBR slot a map
+fills (`T_Rock_BaseColor`, `boulder_AO`), and a **level token** (`lod` plus
+digits at a word boundary, anywhere in the name) says which level of detail a
+file belongs to (`SM_Rock_LOD1`, `T_Rock_Roughness_LOD1`). A name can carry both,
+which is why the role is read from the name with the level token removed: that
+is the one place the two conventions interact, and it is why `plan` and
+`AssetStructure` agree about what a file is.
+
+Two limits are stated rather than hidden. A mesh that packs its levels inside one
+file reports as a single level-less mesh, because file names are all that is
+being read. And a name that follows neither convention is reported as it reads —
+a texture with `TextureRole::Unknown`, a mesh with no level — rather than guessed
+into a slot.
+
 ### Library (implemented, M3)
 
 ```
@@ -275,11 +312,12 @@ dcc::material_script(plan, import)      render a version-tolerant Blender script
 ```
 
 The planner reads only names, never bytes, so the whole layout is testable
-without Blender or a network. `classify` maps a file name to a PBR role and the
-material it belongs to; each role carries a semantic `Binding` that says how it
-wires into the Principled BSDF — glossiness inverted into roughness, ambient
-occlusion multiplied into base colour, normal and displacement through their
-nodes. Keeping the binding semantic rather than a socket name is what lets the
+without Blender or a network. `classify` (in `assetcraft-core`, which the next
+adapter will reuse) maps a file name to a PBR role and the material it belongs
+to; each role carries a semantic `Binding` that says how it wires into the
+Principled BSDF — glossiness inverted into roughness, ambient occlusion
+multiplied into base colour, normal and displacement through their nodes.
+Keeping the binding semantic rather than a socket name is what lets the
 script fall back across Blender's renamed sockets (`Specular` → `Specular IOR
 Level`, `import_scene.obj` → `wm.obj_import`) without the planner knowing about
 any of it.
@@ -407,6 +445,23 @@ programmatic API so the desktop app can drive plan → layout → script →
 editor, and `export --dcc <tool> --run` gives the terminal user the same
 path. A plugin that only works from a console, or only with a live
 connection to fetch its inputs, does not ship.
+
+### Texture-role and LOD reading lives in core
+
+Which PBR slot `T_Rock_BaseColor.png` fills, and which level of detail
+`SM_Rock_LOD1.fbx` belongs to, is a fact about the asset rather than about
+Blender — so `classify`, `lod_tag`, and the layout's `FileKind` live in
+`assetcraft-core::structure`, and `assetcraft-dcc-blender` re-exports them. The
+direction of the dependency decides this for us: an adapter depends on core and
+never the reverse, so a reading that the browser, the Blender exporter, and the
+next two adapters all need cannot live in the first of them. The Blender half
+stays in the Blender crate: `Binding::for_role` maps a shared role onto a
+Principled BSDF socket, and only Blender has one.
+
+One reading serves both promises differently: at resolve time it describes an
+asset from its manifest, before a chunk has been fetched; offline it describes
+the files a previous download left behind. Adding an adapter should mean adding a
+*rendering* of this structure, never a second parser for it.
 
 ### Login uses the authorization-code flow, not the device flow
 

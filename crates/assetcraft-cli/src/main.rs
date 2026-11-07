@@ -12,7 +12,7 @@ use assetcraft_auth::{ensure_fresh_token, DefaultTokenStore, EpicAuth, TokenStor
 use assetcraft_catalog::{FabClient, ResponseCache, DEFAULT_TTL};
 use assetcraft_core::{
     AssetFormat, AssetId, AssetStructure, AssetSummary, Config, LibraryItem, Page, Paths,
-    Preference, SearchQuery, SelectionCriteria, SortOrder, TextureMap,
+    Preference, SearchQuery, SelectionCriteria, Settings, SortOrder, TextureMap,
 };
 use assetcraft_download::{BandwidthLimit, DownloadFile, DownloadOptions, Downloader, Manifest};
 use assetcraft_library::{Download, Library, MediaCache};
@@ -944,11 +944,22 @@ async fn download(config: &Config, args: DownloadArgs) -> Result<()> {
         .download(&AssetId::new(&args.asset_id))
         .context("could not read the library")?;
 
-    let (output, source) = download_output(args.output, recorded, &config.paths, &args.asset_id);
+    let settings = Settings::load(&config.paths).context("could not read the settings")?;
+    let (output, source) = download_output(
+        args.output,
+        recorded,
+        &settings,
+        &config.paths,
+        &args.asset_id,
+    );
     match source {
         OutputSource::Flag => {}
         OutputSource::Recorded => println!(
             "Re-downloading to the location the library recorded: {}",
+            output.display()
+        ),
+        OutputSource::Settings => println!(
+            "First download: writing under the settings download_dir: {}",
             output.display()
         ),
         OutputSource::Standard => println!(
@@ -957,11 +968,18 @@ async fn download(config: &Config, args: DownloadArgs) -> Result<()> {
         ),
     }
 
+    let mut criteria = args.select.criteria();
+    // The settings quality applies where no flag chose one: flags are always
+    // the louder voice, and `--quality ""` still clears the file's answer.
+    if criteria.quality.is_none() {
+        criteria.quality = settings.default_quality.clone();
+    }
+
     let request = assetcraft_transfer::Request {
         asset_id: args.asset_id.clone(),
         output,
         chunk_base: args.chunk_base.clone(),
-        criteria: args.select.criteria(),
+        criteria,
         options: DownloadOptions {
             max_attempts: args.attempts,
             concurrency: args
@@ -1025,6 +1043,8 @@ enum OutputSource {
     Flag,
     /// The library's recorded download location for the asset.
     Recorded,
+    /// The `download_dir` the settings file configures.
+    Settings,
     /// The standard per-asset directory under the data directory.
     Standard,
 }
@@ -1032,10 +1052,13 @@ enum OutputSource {
 /// Where a download's files land: `--output` wins; otherwise the directory the
 /// library recorded for the asset — even when its files are gone, so a
 /// re-download restores them where `export` already looks; otherwise the
-/// standard asset directory, the same home the GUI downloads into.
+/// `download_dir` from the settings file, the same choice the app's settings
+/// dialog writes; otherwise the standard asset directory, the same home the
+/// GUI downloads into.
 fn download_output(
     requested: Option<PathBuf>,
     recorded: Option<Download>,
+    settings: &Settings,
     paths: &Paths,
     asset_id: &str,
 ) -> (PathBuf, OutputSource) {
@@ -1044,6 +1067,12 @@ fn download_output(
     }
     if let Some(record) = recorded.filter(|record| !record.path.as_os_str().is_empty()) {
         return (record.path, OutputSource::Recorded);
+    }
+    if settings.download_dir.is_some() {
+        return (
+            settings.asset_dir_for(paths, asset_id),
+            OutputSource::Settings,
+        );
     }
     (paths.asset_dir(asset_id), OutputSource::Standard)
 }
@@ -1357,27 +1386,40 @@ mod tests {
     }
 
     #[test]
-    fn download_output_prefers_the_flag_then_the_record_then_the_default() {
+    fn download_output_prefers_the_flag_then_the_record_then_the_settings_then_the_default() {
         let paths = Paths::rooted_at("/tmp/assetcraft-cli-test");
         let recorded = Download {
             path: PathBuf::from("/data/where-it-landed"),
             format: "fbx".to_string(),
         };
+        let settings = Settings {
+            download_dir: Some(PathBuf::from("/media/assets")),
+            ..Settings::default()
+        };
 
         let (output, source) = download_output(
             Some(PathBuf::from("/tmp/hand")),
             Some(recorded.clone()),
+            &settings,
             &paths,
             "a",
         );
         assert_eq!(output, PathBuf::from("/tmp/hand"));
         assert_eq!(source, OutputSource::Flag);
 
-        let (output, source) = download_output(None, Some(recorded), &paths, "a");
+        // The record still beats a chosen download_dir: re-downloads restore
+        // files where export already looks, wherever new ones go.
+        let (output, source) =
+            download_output(None, Some(recorded.clone()), &settings, &paths, "a");
         assert_eq!(output, PathBuf::from("/data/where-it-landed"));
         assert_eq!(source, OutputSource::Recorded);
 
-        let (output, source) = download_output(None, None, &paths, "a");
+        let (output, source) = download_output(None, None, &settings, &paths, "a");
+        assert_eq!(output, PathBuf::from("/media/assets/a"));
+        assert_eq!(source, OutputSource::Settings);
+
+        // With no chosen directory, the standard place answers, as before.
+        let (output, source) = download_output(None, None, &Settings::default(), &paths, "a");
         assert_eq!(output, paths.asset_dir("a"));
         assert_eq!(source, OutputSource::Standard);
 
@@ -1386,7 +1428,8 @@ mod tests {
             path: PathBuf::new(),
             format: String::new(),
         };
-        let (output, source) = download_output(None, Some(blank), &paths, "a");
+        let (output, source) =
+            download_output(None, Some(blank), &Settings::default(), &paths, "a");
         assert_eq!(output, paths.asset_dir("a"));
         assert_eq!(source, OutputSource::Standard);
     }

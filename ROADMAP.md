@@ -249,7 +249,7 @@ Make it a product.
       lay out, write the script, hand it to Blender — closing the DoD's one
       path that exists only in the CLI today.
 - [x] Owned library view: the signed-in account's Fab library, paged.
-- [ ] Collections view and settings.
+- [x] Collections view and settings.
 - [x] Login and account status inside the app (Epic launcher flow, token shared
       with the CLI).
 - [ ] Installers/artifacts for Windows (`.msi`/`.zip`), macOS (`.dmg`), Linux

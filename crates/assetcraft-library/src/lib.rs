@@ -705,6 +705,10 @@ mod tests {
                 height: Some(1024),
                 md5: Some("abc".to_string()),
             }],
+            // The download route, if the entry has one, must survive the
+            // JSON round trip too — a lost artifact id means a silent "no
+            // download route" after the next re-sync rather than before.
+            artifact_id: Some("Rocky7e371bf75594V1".to_string()),
         };
         library.insert(&original).unwrap();
 

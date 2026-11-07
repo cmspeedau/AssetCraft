@@ -267,6 +267,13 @@ pub struct LibraryItem {
     pub categories: Vec<Category>,
     /// Images for the asset.
     pub images: Vec<AssetImage>,
+    /// The artifact id of the Unreal build Fab can deliver for this asset.
+    /// It is what the artifact-manifest endpoint takes, and the only download
+    /// route Fab offers third parties; an asset with no artifact here has no
+    /// download route at all. `serde(default)` so rows written before the
+    /// field existed still load, they simply need a library re-sync.
+    #[serde(default)]
+    pub artifact_id: Option<String>,
 }
 
 impl LibraryItem {
@@ -298,6 +305,11 @@ pub struct DownloadInfo {
     pub asset_format: String,
     /// Build version, when reported.
     pub build_version: Option<String>,
+    /// SHA-1 of the manifest blob the distribution points serve, hex. The
+    /// artifact-manifest endpoint reports it; checking it catches a truncated
+    /// or swapped CDN body before a single chunk is fetched.
+    #[serde(default)]
+    pub manifest_hash: Option<String>,
     /// Signed distribution points.
     pub distribution_points: Vec<DistributionPoint>,
 }

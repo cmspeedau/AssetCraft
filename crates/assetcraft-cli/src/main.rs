@@ -1112,10 +1112,21 @@ fn export_asset(config: &Config, args: ExportArgs) -> Result<()> {
             None => println!("Ran Blender"),
         }
     } else {
-        println!(
-            "Run it with: blender --background --python {}",
-            report.script.display()
-        );
+        // Name the Blender that was actually found: on a machine whose only
+        // Blender is Flatpak's, `blender` answers to nobody, and the copied
+        // line must be the command that runs — the exported
+        // `org.blender.Blender` wrapper takes the same arguments.
+        match assetcraft_dcc_blender::detect::find() {
+            Some(blender) => println!(
+                "Run it with: {} --background --python {}",
+                blender.display(),
+                report.script.display()
+            ),
+            None => println!(
+                "Run it with: blender --background --python {}",
+                report.script.display()
+            ),
+        }
         println!(
             "   …or install the Blender addon (blender_addon/) and point it \
              at this export's target folder."

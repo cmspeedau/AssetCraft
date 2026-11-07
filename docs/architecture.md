@@ -611,6 +611,21 @@ The addon's preference still overrides the default: pointing it at some other
 export root (a CLI `--target`, an external drive, a synced folder) is the
 supported way to browse exports the app did not write.
 
+The mirror has to find the *host's* data directory even when Blender itself is
+sandboxed — on Linux that usually means Flatpak's `org.blender.Blender`. The
+sandbox redefines `XDG_DATA_HOME` to `~/.var/app/org.blender.Blender/data`,
+which is precisely the variable the mirror would otherwise trust, and the app
+never writes there. So `exports.py` asks `/.flatpak-info` — the file every
+sandbox mounts at its root — whether it is inside one, and inside a sandbox it
+resolves the XDG *default* from the real home instead, which the sandbox mounts
+as-is (Flathub's Blender grants `filesystem=host`, the same grant that makes
+the exports readable at all). A host `XDG_DATA_HOME` relocated outside the
+home directory is invisible from any sandbox under any rule; the preference is
+the answer there, and both READMEs say so. `detect::find()` needed no flatpak
+special case: a Flatpak install exports a `org.blender.Blender` wrapper into
+the system and per-user `flatpak/exports/bin` directories, and running that
+path is the supported way to launch it, headless arguments included.
+
 ### The library stores an item as JSON, with one denormalised column
 
 The `assets` table holds the whole `LibraryItem` as JSON, plus a copy of the

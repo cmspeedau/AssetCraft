@@ -235,6 +235,23 @@ class DefaultLibraryRootTest(unittest.TestCase):
                 os.path.join("/home/u", ".local", "share", "assetcraft", "exports"),
             )
 
+    def test_flatpak_ignores_the_sandboxed_xdg_override(self):
+        # Blender on Flathub runs in a sandbox whose XDG_DATA_HOME points at
+        # ~/.var/app/org.blender.Blender/data — a folder the app never writes
+        # to. The rule must see through it to the real home's default, or a
+        # Flatpak Blender's panel lists an empty library while the app's
+        # exports sit one bind-mount away.
+        sandbox_data = "/home/u/.var/app/org.blender.Blender/data"
+        with mock.patch.object(exports.sys, "platform", "linux"), mock.patch.dict(
+            os.environ, {"XDG_DATA_HOME": sandbox_data}
+        ), mock.patch.object(exports, "inside_flatpak", return_value=True), mock.patch(
+            "os.path.expanduser", return_value="/home/u"
+        ):
+            self.assertEqual(
+                exports.default_library_root(),
+                os.path.join("/home/u", ".local", "share", "assetcraft", "exports"),
+            )
+
     def test_macos_uses_the_bundle_identifier(self):
         with mock.patch.object(exports.sys, "platform", "darwin"), mock.patch.dict(
             os.environ, {}, clear=True

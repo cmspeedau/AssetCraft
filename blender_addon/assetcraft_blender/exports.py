@@ -24,6 +24,16 @@ MANIFEST_VERSION = 1
 MAX_WALKED_DIRECTORIES = 4000
 
 
+def inside_flatpak() -> bool:
+    """Whether this Python is running inside a Flatpak sandbox.
+
+    Every sandbox has a `/.flatpak-info` file at its root — the runtime mounts
+    it there so a program can tell where it lives. It is what the export-root
+    rule below asks before trusting `XDG_DATA_HOME`.
+    """
+    return os.path.exists("/.flatpak-info")
+
+
 def default_library_root() -> str:
     """The AssetCraft app's export directory on this machine, or "".
 
@@ -51,9 +61,19 @@ def default_library_root() -> str:
             "dev.AssetCraft.AssetCraft",
             "exports",
         )
-    xdg = os.environ.get("XDG_DATA_HOME") or os.path.join(
-        os.path.expanduser("~"), ".local", "share"
-    )
+    xdg = os.environ.get("XDG_DATA_HOME")
+    if inside_flatpak():
+        # A Flatpak sandbox (Blender's on Flathub is the one that matters
+        # here) redefines XDG_DATA_HOME to a folder inside the sandbox
+        # (~/.var/app/APPID/data) — and the app, living on the host, writes
+        # where the *host* environment points instead. The sandbox mounts the
+        # filesystem as it is (Flathub's Blender grants filesystem=host), so
+        # the XDG default computed from the real home is the same folder the
+        # app used, and ignoring the sandboxed variable finds it. A host data
+        # directory the user relocated is invisible from inside the sandbox
+        # under any rule; the Export Library preference names it.
+        xdg = None
+    xdg = xdg or os.path.join(os.path.expanduser("~"), ".local", "share")
     return os.path.join(xdg, "assetcraft", "exports")
 
 

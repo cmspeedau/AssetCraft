@@ -938,6 +938,10 @@ fn export_asset(config: &Config, args: ExportArgs) -> Result<()> {
             "Run it with: blender --background --python {}",
             report.script.display()
         );
+        println!(
+            "   …or install the Blender addon (blender_addon/) and point it \
+             at this export's target folder."
+        );
     }
     Ok(())
 }

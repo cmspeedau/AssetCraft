@@ -2,6 +2,10 @@
 /target
 **/*.rs.bk
 
+# Addon build output and Python caches
+blender_addon/dist/
+__pycache__/
+
 # Editor / OS noise
 .DS_Store
 .idea/

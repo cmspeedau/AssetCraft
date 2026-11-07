@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use assetcraft_core::{Error, Result};
 
 use crate::detect;
+use crate::manifest;
 use crate::plan::ExportPlan;
 use crate::script::material_script;
 
@@ -36,6 +37,9 @@ pub struct ExportReport {
     pub dir: PathBuf,
     /// The generated script.
     pub script: PathBuf,
+    /// The machine-readable manifest written beside the script, which the
+    /// Blender addon discovers exports through.
+    pub manifest: PathBuf,
     /// How many files were copied.
     pub copied: usize,
     /// How many materials the script builds.
@@ -70,6 +74,10 @@ pub fn export(
     let script = dir.join(SCRIPT_NAME);
     std::fs::write(&script, material_script(plan, options.import_meshes))?;
 
+    // Third and last, so a half-written export never announces itself as a
+    // complete one: the addon only lists directories this file exists in.
+    let manifest_path = manifest::write(plan, options.import_meshes)?;
+
     let mut ran = false;
     let mut blender = None;
     if options.run {
@@ -100,6 +108,7 @@ pub fn export(
     Ok(ExportReport {
         dir,
         script,
+        manifest: manifest_path,
         copied,
         materials: plan.materials.len(),
         ran,
@@ -155,6 +164,48 @@ mod tests {
         assert_eq!(std::fs::read(dir.join("meshes/rock.fbx")).unwrap(), b"mesh");
         assert!(report.script.exists());
         assert_eq!(report.materials, 1);
+    }
+
+    #[test]
+    fn writes_a_manifest_the_addon_can_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("download");
+        let files = source_tree(&source);
+        let target = temp.path().join("project");
+
+        let plan = crate::plan(&target, &AssetId::new("rock-1"), "fbx", &files);
+        let report = export(
+            &plan,
+            &source,
+            &ExportOptions {
+                import_meshes: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.manifest,
+            target.join("rock-1/fbx/assetcraft_export.json")
+        );
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report.manifest).unwrap()).unwrap();
+        assert_eq!(json["version"], 1);
+        assert_eq!(json["asset"], "rock-1");
+        assert_eq!(json["script"], SCRIPT_NAME);
+        assert_eq!(json["importMeshes"], true);
+        assert_eq!(json["meshes"], serde_json::json!(["meshes/rock.fbx"]));
+        assert_eq!(json["materials"][0]["name"], "rock");
+        // The manifest's paths are the layout's, so what it promises exists.
+        for path in json["meshes"].as_array().unwrap() {
+            assert!(dir_of(&report.manifest)
+                .join(path.as_str().unwrap())
+                .is_file());
+        }
+    }
+
+    fn dir_of(manifest: &Path) -> PathBuf {
+        manifest.parent().unwrap().to_path_buf()
     }
 
     #[test]

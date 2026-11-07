@@ -36,3 +36,23 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+  addon:
+    name: Blender addon
+    runs-on: ubuntu-latest
+    env:
+      ASSETCRAFT_ADDON_FIXTURE: ${{ runner.temp }}/addon-fixture
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build an export with the Rust exporter
+        run: cargo test -p assetcraft-dcc-blender --test addon_fixture
+
+      - name: Run it through the addon's Python tests
+        run: python3 -m unittest discover -s blender_addon/tests -v

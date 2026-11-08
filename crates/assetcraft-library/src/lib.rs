@@ -326,6 +326,35 @@ impl Library {
         Ok(found)
     }
 
+    /// Where every downloaded asset's files were recorded, newest table order
+    /// left to the caller.
+    ///
+    /// The GUI's Local view is the consumer that matters: what counts as
+    /// downloaded is this table, not the Fab-sourced index, which knows every
+    /// asset the account owns whether or not its files were ever fetched.
+    pub fn list_downloads(&self) -> Result<Vec<(String, Download)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT asset_id, path, format FROM downloads")
+            .map_err(database)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    Download {
+                        path: PathBuf::from(row.get::<_, String>(1)?),
+                        format: row.get::<_, String>(2)?,
+                    },
+                ))
+            })
+            .map_err(database)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(database)?);
+        }
+        Ok(out)
+    }
+
     /// Whether the library has a record of an asset's downloaded files.
     pub fn is_downloaded(&self, id: &AssetId) -> Result<bool> {
         Ok(self.download(id)?.is_some())
@@ -921,6 +950,23 @@ mod tests {
 
         assert!(library.get(&AssetId::new("a")).unwrap().is_none());
         assert!(library.is_downloaded(&AssetId::new("a")).unwrap());
+    }
+
+    #[test]
+    fn listing_downloads_reports_every_record_and_only_records() {
+        let library = library();
+        library.insert(&item("a", "Rock")).unwrap();
+        library.insert(&item("b", "Moss")).unwrap();
+        library
+            .record_download(&AssetId::new("b"), Path::new("/lib/b"), "glb")
+            .unwrap();
+
+        let downloads = library.list_downloads().unwrap();
+        assert_eq!(downloads.len(), 1, "the index is not the download list");
+        let (id, found) = &downloads[0];
+        assert_eq!(id, "b");
+        assert_eq!(found.path, PathBuf::from("/lib/b"));
+        assert_eq!(found.format, "glb");
     }
 
     #[test]

@@ -118,7 +118,14 @@ pub struct App {
     requested: HashSet<String>,
     details: HashMap<String, assetcraft_core::AssetDetail>,
     pub favorites: HashSet<String>,
+    /// Assets whose files are on disk: the `downloads` records the library
+    /// carries. Local shows exactly these, and a card is "already downloaded"
+    /// by the same test.
     pub local: HashSet<String>,
+    /// Assets the library index holds — owned metadata, whether or not the
+    /// files were ever fetched. Collections organise these; Local shows the
+    /// ones that landed.
+    held: HashSet<String>,
     pub view: View,
     pub filters: Filters,
     pub query: String,
@@ -184,6 +191,7 @@ impl Default for App {
             details: HashMap::new(),
             favorites: HashSet::new(),
             local: HashSet::new(),
+            held: HashSet::new(),
             view: View::Home,
             filters: Filters::default(),
             query: String::new(),
@@ -296,7 +304,8 @@ impl App {
 
     // ----- data flow -------------------------------------------------------
 
-    /// Read the local library into cards and remember which assets are held.
+    /// Read the local library into cards and remember which assets the index
+    /// holds and which are on disk.
     ///
     /// Favourites and collections are read in the same breath: they live in
     /// the same database, describe the same assets, and a view that showed
@@ -304,8 +313,20 @@ impl App {
     fn reload_local(&mut self) {
         let Some(library) = &self.library else {
             self.local_cards.clear();
+            self.local.clear();
+            self.held.clear();
             return;
         };
+        match index_cards(library) {
+            Ok(cards) => {
+                self.held = cards.iter().map(|card| card.id.clone()).collect();
+                self.library_error = None;
+            }
+            Err(error) => {
+                self.held.clear();
+                self.library_error = Some(error.to_string());
+            }
+        }
         match local_cards(library) {
             Ok(cards) => {
                 self.local = cards.iter().map(|card| card.id.clone()).collect();
@@ -313,6 +334,7 @@ impl App {
                 self.library_error = None;
             }
             Err(error) => {
+                self.local.clear();
                 self.local_cards.clear();
                 self.library_error = Some(error.to_string());
             }
@@ -1709,11 +1731,12 @@ impl App {
         let live = self.source == Source::Live;
         let local_view = self.view == View::Local;
         let owned_view = self.view == View::Purchased;
-        // Collections organise what you hold, so they are offered for local
-        // assets in any view, read once for the frame; the boxes write through
-        // to the library the moment they are ticked.
-        let is_local = self.local.contains(&id);
-        let membership: Vec<i64> = if is_local {
+        // Collections organise what you hold — assets the library index
+        // knows — so they are offered for held assets in any view, downloaded
+        // yet or not, read once for the frame; the boxes write through to the
+        // library the moment they are ticked.
+        let is_held = self.held.contains(&id);
+        let membership: Vec<i64> = if is_held {
             self.library
                 .as_ref()
                 .and_then(|library| library.collections_for(&AssetId::new(id.clone())).ok())
@@ -1721,7 +1744,7 @@ impl App {
         } else {
             Vec::new()
         };
-        let collections_open = is_local && self.library.is_some();
+        let collections_open = is_held && self.library.is_some();
         let collections: Vec<Collection> = if collections_open {
             self.collections.clone()
         } else {
@@ -2467,8 +2490,44 @@ fn dropdown<T: Copy + PartialEq>(
     );
 }
 
-/// The Local view's cards: every asset the library holds, by title.
+/// The Local view's cards: what your downloads put on disk, by title.
+///
+/// The `downloads` table, not the Fab-sourced index, decides membership. The
+/// index knows every asset the account owns — hundreds of rows after a sync —
+/// and an owned asset whose files were never fetched is not something Local
+/// can open, export, or verify: there is nothing on disk. So a record whose
+/// directory has since been moved or deleted drops out of the view too (the
+/// CLI's `library` still lists it as `[files missing]`). The card borrows the
+/// index's title and thumbnail where a sync supplied them and falls back to
+/// the bare id where it did not, so a download made before the first sync is
+/// still a card rather than an error.
 fn local_cards(library: &Library) -> assetcraft_core::Result<Vec<Card>> {
+    let index: HashMap<String, assetcraft_core::LibraryItem> = library
+        .list_all()?
+        .into_iter()
+        .map(|item| (item.asset_id.clone(), item))
+        .collect();
+    let mut cards: Vec<Card> = library
+        .list_downloads()?
+        .into_iter()
+        .filter(|(_, download)| download.path.exists())
+        .map(|(id, _)| match index.get(&id) {
+            Some(item) => Card::from_library_item(item),
+            None => Card::from_library_item(&assetcraft_core::LibraryItem {
+                asset_id: id.clone(),
+                title: id,
+                ..Default::default()
+            }),
+        })
+        .collect();
+    cards.sort_by_key(|card| card.title.to_lowercase());
+    Ok(cards)
+}
+
+/// Every asset the library index holds, by title. Collections draw their
+/// cards from this pool: a collection organises what you own, not only what
+/// has landed.
+fn index_cards(library: &Library) -> assetcraft_core::Result<Vec<Card>> {
     let mut cards: Vec<Card> = library
         .list_all()?
         .iter()
@@ -2478,13 +2537,13 @@ fn local_cards(library: &Library) -> assetcraft_core::Result<Vec<Card>> {
     Ok(cards)
 }
 
-/// One collection's cards: the local library's cards restricted to its
+/// One collection's cards: the library's cards restricted to its
 /// members, in the membership's own title order — a collection reads like
-/// the Local view it is drawn from. Members whose metadata row is gone
+/// the library list it is drawn from. Members whose metadata row is gone
 /// (a dropped row) leave a gap rather than an error: the files may still be
 /// on disk, but there is no card to draw without a title.
 fn collection_cards(library: &Library, id: i64) -> assetcraft_core::Result<Vec<Card>> {
-    let owned: HashMap<String, Card> = local_cards(library)?
+    let owned: HashMap<String, Card> = index_cards(library)?
         .into_iter()
         .map(|card| (card.id.clone(), card))
         .collect();
@@ -2535,7 +2594,7 @@ mod tests {
     use assetcraft_library::Library;
 
     #[test]
-    fn the_local_view_lists_library_items_by_title() {
+    fn the_local_view_lists_downloads_not_the_whole_index() {
         let library = Library::open_in_memory().unwrap();
         for (id, title) in [("b", "Beta Asset"), ("a", "Alpha Asset")] {
             library
@@ -2546,11 +2605,79 @@ mod tests {
                 })
                 .unwrap();
         }
+        // A synced-but-never-fetched asset is metadata, not something on
+        // disk: Local stays empty however full the index is.
+        assert!(
+            local_cards(&library).unwrap().is_empty(),
+            "434 index rows are not 434 downloads"
+        );
 
+        let dir = tempfile::tempdir().unwrap();
+        library
+            .record_download(&AssetId::new("b"), dir.path(), "ue")
+            .unwrap();
         let cards = local_cards(&library).unwrap();
-        let titles: Vec<&str> = cards.iter().map(|card| card.title.as_str()).collect();
-        assert_eq!(titles, ["Alpha Asset", "Beta Asset"]);
-        assert_eq!(cards[0].id, "a");
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].id, "b");
+        assert_eq!(
+            cards[0].title, "Beta Asset",
+            "the index still names the card"
+        );
+
+        // A download the index never saw is still on disk: titled by id
+        // until `assetcraft library` describes it.
+        library
+            .record_download(&AssetId::new("z"), dir.path(), "ue")
+            .unwrap();
+        let titles: Vec<String> = local_cards(&library)
+            .unwrap()
+            .iter()
+            .map(|card| card.title.clone())
+            .collect();
+        assert_eq!(titles, ["Beta Asset", "z"]);
+
+        // And a record whose directory has since been moved away is not on
+        // disk either; the CLI's [files missing] is its remaining resting
+        // place, not the Local view.
+        library
+            .record_download(&AssetId::new("b"), &dir.path().join("gone"), "ue")
+            .unwrap();
+        let titles: Vec<String> = local_cards(&library)
+            .unwrap()
+            .iter()
+            .map(|card| card.title.clone())
+            .collect();
+        assert_eq!(titles, ["z"]);
+    }
+
+    #[test]
+    fn collections_draw_on_the_library_index_not_only_downloads() {
+        let library = Library::open_in_memory().unwrap();
+        for (id, title) in [("b", "Beta"), ("a", "Alpha")] {
+            library
+                .insert(&LibraryItem {
+                    asset_id: id.to_owned(),
+                    title: title.to_owned(),
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        let collection = library.create_collection("Kept").unwrap();
+        for id in ["a", "b"] {
+            library
+                .add_to_collection(collection.id, &AssetId::new(id))
+                .unwrap();
+        }
+
+        // Nothing downloaded: the collection still lists both, because it
+        // organises what the account owns, not only what has landed.
+        let mut titles: Vec<String> = collection_cards(&library, collection.id)
+            .unwrap()
+            .iter()
+            .map(|card| card.title.clone())
+            .collect();
+        titles.sort();
+        assert_eq!(titles, ["Alpha", "Beta"]);
     }
 
     #[test]

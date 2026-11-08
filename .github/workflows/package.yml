@@ -1,0 +1,273 @@
+name: Package
+
+# The human-facing artifacts: a Windows .msi and portable .zip, a universal
+# macOS .dmg, and Linux .deb and .AppImage. It complements release.yml and
+# never competes with it — that workflow publishes the raw per-target
+# binaries the auto-updater swaps; this one wraps the same builds into
+# installers with different names, so the updater can never mistake an
+# installer for a binary. Both run off one `v*` tag; this workflow joins
+# whichever release is up, creating it only if it isn't there yet.
+#
+# On pull requests it builds everything (and uploads nothing but workflow
+# artifacts) so a packaging change is proven before it can ship.
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: installers (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            grep -m1 '^version' Cargo.toml | cut -d'"' -f2 |
+              sed 's/^/version=/' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build
+        run: cargo build --release -p assetcraft-cli -p assetcraft-gui
+
+      - name: The .deb
+        run: |
+          set -euo pipefail
+          v="${{ steps.version.outputs.version }}"
+          root=debroot
+          install -Dm755 target/release/assetcraft "$root/usr/bin/assetcraft"
+          install -Dm755 target/release/assetcraft-gui "$root/usr/bin/assetcraft-gui"
+          install -Dm644 packaging/linux/assetcraft.desktop \
+            "$root/usr/share/applications/assetcraft.desktop"
+          install -Dm644 packaging/icon.png \
+            "$root/usr/share/icons/hicolor/512x512/apps/assetcraft-gui.png"
+          mkdir "$root/DEBIAN"
+          sed -e "s/@VERSION@/$v/" -e "s/@ARCH@/amd64/" \
+            packaging/linux/control > "$root/DEBIAN/control"
+          dpkg-deb --root-owner-group --build "$root" "assetcraft_${v}_amd64.deb"
+
+      - name: The .AppImage
+        run: |
+          set -euo pipefail
+          v="${{ steps.version.outputs.version }}"
+          # The canonical AppDir: an AppRun, a desktop file, an icon, and
+          # the binaries as they would sit in /usr. No plugins — the GUI's
+          # display libraries are dlopened by winit/glutin at runtime and
+          # every real desktop has them; the .deb declares the same set.
+          mkdir -p AssetCraft/usr/bin AssetCraft/usr/share/applications \
+            AssetCraft/usr/share/icons/hicolor/512x512/apps
+          cp target/release/assetcraft target/release/assetcraft-gui AssetCraft/usr/bin/
+          cp packaging/linux/assetcraft.desktop AssetCraft/AssetCraft.desktop
+          cp packaging/icon.png \
+            AssetCraft/usr/share/icons/hicolor/512x512/apps/assetcraft-gui.png
+          cp packaging/icon.png AssetCraft/.DirIcon
+          printf '#!/usr/bin/env sh\nexec "$(dirname "$(readlink -f "$0")")/usr/bin/assetcraft-gui" "$@"\n' \
+            > AssetCraft/AppRun
+          chmod +x AssetCraft/AppRun
+          curl -sL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          # CI has no FUSE: the tool unpacks and runs itself instead. -n
+          # skips the update-information prompt.
+          APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool -n AssetCraft
+          mv AssetCraft-x86_64.AppImage "AssetCraft-${v}-x86_64.AppImage"
+
+      - name: Downloadable artifacts (pull requests)
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-linux
+          path: |
+            assetcraft_*_amd64.deb
+            AssetCraft-*.AppImage
+
+      - name: Publish to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          # Join release.yml's release if it got there first; make our own
+          # if it has not. Whichever workflow wins the race, both uploads
+          # land on one release.
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" || true
+          gh release upload "$GITHUB_REF_NAME" \
+            "assetcraft_${{ steps.version.outputs.version }}_amd64.deb" \
+            "AssetCraft-${{ steps.version.outputs.version }}-x86_64.AppImage" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  windows:
+    name: installers (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            grep -m1 '^version' Cargo.toml | cut -d'"' -f2 |
+              sed 's/^/version=/' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build
+        run: cargo build --release -p assetcraft-cli -p assetcraft-gui
+
+      - name: The portable .zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/release/assetcraft.exe, target/release/assetcraft-gui.exe `
+            -DestinationPath "AssetCraft-${{ steps.version.outputs.version }}-windows-x86_64.zip"
+
+      - name: The .msi
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="${{ steps.version.outputs.version }}"
+          dotnet tool install --global wix
+          "$HOME/.dotnet/tools/wix" build packaging/windows/AssetCraft.wxs \
+            -arch x64 -o "AssetCraft-${v}-windows-x86_64.msi" \
+            -dVersion="$v" \
+            -dCliExe=target/release/assetcraft.exe \
+            -dGuiExe=target/release/assetcraft-gui.exe \
+            -dIcon=packaging/windows/assetcraft.ico
+
+      - name: Downloadable artifacts (pull requests)
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-windows
+          path: |
+            AssetCraft-*-windows-x86_64.zip
+            AssetCraft-*-windows-x86_64.msi
+
+      - name: Publish to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" || true
+          v="${{ steps.version.outputs.version }}"
+          gh release upload "$GITHUB_REF_NAME" \
+            "AssetCraft-${v}-windows-x86_64.zip" \
+            "AssetCraft-${v}-windows-x86_64.msi" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  macos:
+    name: installers (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            grep -m1 '^version' Cargo.toml | cut -d'"' -f2 |
+              sed 's/^/version=/' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build both architectures
+        run: |
+          cargo build --release --target aarch64-apple-darwin -p assetcraft-cli -p assetcraft-gui
+          cargo build --release --target x86_64-apple-darwin -p assetcraft-cli -p assetcraft-gui
+
+      - name: The universal .dmg
+        run: |
+          set -euo pipefail
+          v="${{ steps.version.outputs.version }}"
+          mkdir -p universal
+          lipo target/aarch64-apple-darwin/release/assetcraft \
+               target/x86_64-apple-darwin/release/assetcraft \
+               -create -output universal/assetcraft
+          lipo target/aarch64-apple-darwin/release/assetcraft-gui \
+               target/x86_64-apple-darwin/release/assetcraft-gui \
+               -create -output universal/assetcraft-gui
+          # A minimal, honest .app: bundle bits in Contents, no wrapper
+          # frameworks to sign. Ad-hoc signatures so Gatekeeper accepts a
+          # locally built copy; a Developer ID is a future box.
+          app="stage/AssetCraft.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          sed "s/@VERSION@/$v/" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+          printf 'APPL????' > "$app/Contents/PkgInfo"
+          cp universal/assetcraft-gui "$app/Contents/MacOS/assetcraft-gui"
+          cp universal/assetcraft "$app/Contents/MacOS/assetcraft"
+          mkdir AppIcon.iconset
+          for s in 16 32 64 128 256 512; do
+            sips -z $s $s packaging/icon.png --out "AppIcon.iconset/icon_${s}x${s}.png" > /dev/null
+          done
+          for s in 32 64 256 512; do
+            d=$((s / 2))
+            cp "AppIcon.iconset/icon_${s}x${s}.png" "AppIcon.iconset/icon_${d}x${d}@2x.png"
+          done
+          iconutil -c icns AppIcon.iconset -o "$app/Contents/Resources/AppIcon.icns"
+          codesign --force -s - "$app/Contents/MacOS/assetcraft-gui"
+          codesign --force -s - "$app/Contents/MacOS/assetcraft"
+          codesign --force -s - "$app"
+          cp universal/assetcraft "stage/assetcraft"
+          ln -s /Applications stage/Applications
+          cat > stage/README.txt <<TXT
+          AssetCraft $v
+
+          Drag AssetCraft.app into Applications, then launch it.
+          The first launch may need a right-click > Open once (ad-hoc
+          signed, not notarized). Put the "assetcraft" command-line tool
+          anywhere on your PATH if you want it too.
+          TXT
+          hdiutil create -volname "AssetCraft $v" -srcfolder stage -ov \
+            -format UDZO "AssetCraft-${v}-universal.dmg"
+
+      - name: Downloadable artifacts (pull requests)
+        if: github.event_name != 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-macos
+          path: AssetCraft-*-universal.dmg
+
+      - name: Publish to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" || true
+          gh release upload "$GITHUB_REF_NAME" \
+            "AssetCraft-${{ steps.version.outputs.version }}-universal.dmg" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

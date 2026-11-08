@@ -1,0 +1,50 @@
+<!-- The Windows installer: one machine-wide MSI carrying both binaries.
+
+     Built by .github/workflows/package.yml with WiX v5 (`wix build`) against
+     the release binaries the CI matrix has already produced — this file
+     installs, it never compiles. -dVersion/-dCliExe/-dGuiExe/-dIcon come
+     from the workflow. The UpgradeCode below is forever: changing it would
+     strand installs on the old product identity instead of upgrading them.
+
+     A universal .app, not a per-exe installer: both binaries land in
+     %ProgramFiles%\AssetCraft (README: put one folder on PATH). -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="AssetCraft" Language="1033" Version="$(var.Version)"
+           Manufacturer="AssetCraft contributors"
+           UpgradeCode="9f3c1a7e-2b64-4d0f-9c58-6a2e7f0d41b3">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of AssetCraft is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Icon Id="AppIco" SourceFile="$(var.Icon)" />
+    <Property Id="ARPPRODUCTICON" Value="AppIco" />
+    <Feature Id="Main" Title="AssetCraft" Level="1">
+      <ComponentGroupRef Id="Binaries" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLDIR" Name="AssetCraft" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppMenu" Name="AssetCraft" />
+    </StandardDirectory>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="Binaries" Directory="INSTALLDIR">
+      <Component Id="CliExe" Bitness="always64">
+        <File Source="$(var.CliExe)" Name="assetcraft.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="GuiExe" Bitness="always64">
+        <File Source="$(var.GuiExe)" Name="assetcraft-gui.exe">
+          <Shortcut Id="GuiShortcut" Directory="AppMenu" Name="AssetCraft"
+                    Advertise="no" Icon="AppIco" />
+        </File>
+      </Component>
+      <!-- The shortcut's icon needs a live file at runtime, so ship it. -->
+      <Component Id="AppIcoFile" Bitness="always64">
+        <File Source="$(var.Icon)" Name="assetcraft.ico" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

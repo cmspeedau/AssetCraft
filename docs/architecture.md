@@ -39,6 +39,7 @@ rather than a change to the engine.
 | `assetcraft-transfer` | lib | Asset id to files on disk: resolve, fetch chunks, reassemble, report contents | M2 |
 | `assetcraft-library` | lib | Local library index | M3 |
 | `assetcraft-dcc-blender` | adapter | Blender export | M4 |
+| `assetcraft-update` | lib | Release feed, checksum verification, binary swap | M5 |
 | `assetcraft-cli` | bin | Headless front end | M1 |
 | `assetcraft-gui` | bin | egui desktop app | M5 |
 
@@ -449,13 +450,61 @@ assetcraft download  reads it too: download_dir slots under
                      default_quality under --quality
 ```
 
-Two fields, each with a live consumer on both binaries; no more keys than that
-until something reads them. A missing file is the defaults (a user who chose
+Two fields — quality and download root — each with a live consumer on both
+binaries; no more keys than those until something reads them. A missing file
+is the defaults (a user who chose
 nothing chose them); a file that cannot be parsed is an error naming itself and
 saying to fix or delete it, because defaulting around a typo would quietly undo
 the choices the user did make. The app reads the quality at startup to seed its
 resolution picker and the download worker re-reads the file per download, so
 hand edits land without either program being restarted or notified.
+
+A third field, `auto_update`, has one consumer: the app, at startup. `None`
+is the feature-list promise (it checks); `Some(false)` is the opt-out, and the
+Settings dialog's checkbox writes it.
+
+### Auto-update (implemented, M5)
+
+```
+assetcraft-gui at start (settings)          assetcraft update [--apply]
+        │ Command::CheckUpdate                            │
+        ▼                                                 ▼
+        └──────────────► UpdateClient::check(Product) ◄──┘
+                         GET Config::update_feed_url —
+                         GitHub's Releases API, or a mirror
+                         named by ASSETCRAFT_UPDATE_FEED
+                                 │ plan_update(): a pure rule
+                                 ▼
+        GUI: banner "vX.Y.Z is available"  [Update] ──► Command::DownloadUpdate
+        CLI: says so; --apply goes on
+                                 │
+                                 ▼
+        download: recorded size must match, sha256 must equal the release's
+        own `digest`; staged under cache/updates, discarded on any mismatch
+                                 │
+                                 ▼
+        apply: copy beside the exe → rename exe→.old → rename aside→exe
+               (the first rename is undone if the second fails)
+                                 │
+                                 ▼
+        GUI offers Restart (spawn the path that is now the new binary,
+        close this window); CLI says the next start is the new one
+```
+
+The release feed is GitHub's Releases API because that is the one endpoint
+that carries a digest GitHub itself computed over the stored bytes — an
+update verified against a digest the publisher did not choose is theatre, so
+an asset without a parseable `sha256:` digest is never even offered. The
+naming rule (`assetcraft-<cli|gui>-<target triple>[.exe]`, raw binaries
+uploaded by `.github/workflows/release.yml`) means a running copy finds its
+own replacement by exact name and can never install the other product's
+binary or another platform's. Drafts are never offered; prereleases are only
+ever offered to prereleases. `plan_update` is pure — release JSON in, chosen
+asset out — so the whole rule is unit-tested, and the wire halves run against
+httpmock fixtures; there are no live releases to test against yet, which is
+the point of building the rule first and the workflow in the same breath.
+Windows is why `apply` is three renames rather than one write: a running
+image cannot be overwritten, but it can be renamed out of the way.
 
 ## Decisions
 
@@ -707,6 +756,11 @@ All Fab paths are relative to `https://www.fab.com`.
 
 Epic account service: `https://account-public-service-prod03.ol.epicgames.com`,
 token endpoint `/account/api/oauth/token`.
+
+Update feed: `https://api.github.com/repos/cmspeedau/AssetCraft/releases?per_page=100`
+(Releases API, no auth, IP-rate-limited; GitHub demands a `User-Agent`, which
+every AssetCraft client already sends). Assets are fetched from the
+`browser_download_url` each release entry carries.
 
 ## Testing
 

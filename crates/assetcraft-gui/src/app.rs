@@ -2792,9 +2792,35 @@ fn strip_tags(html: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{collection_cards, local_cards, short_date, strip_tags, Source, View};
+    use super::{
+        collection_cards, local_cards, short_date, store_locked, strip_tags, Source, View,
+    };
     use assetcraft_core::{AssetId, LibraryItem};
     use assetcraft_library::Library;
+
+    #[test]
+    fn the_store_waits_for_a_session() {
+        use super::Account;
+        let signed_out = &None::<Account>;
+        // A stand-in session: only its presence matters to the rule.
+        let signed_in = &Some(Account {
+            name: "Tester".to_owned(),
+        });
+        // Bridge parity: signed out, the marketplace views are empty windows.
+        for view in [View::Home, View::Free, View::Purchased] {
+            assert!(store_locked(Source::Live, signed_out, view), "{view:?}");
+        }
+        // A session unlocks them; the demo dataset was asked for on purpose.
+        for view in [View::Home, View::Free, View::Purchased] {
+            assert!(!store_locked(Source::Live, signed_in, view), "{view:?}");
+        }
+        assert!(!store_locked(Source::Demo, signed_out, View::Home));
+        // What is already the user's own never waits: the library and its
+        // views work signed out.
+        for view in [View::Local, View::Collections, View::Favorites] {
+            assert!(!store_locked(Source::Live, signed_out, view), "{view:?}");
+        }
+    }
 
     #[test]
     fn the_local_view_lists_downloads_not_the_whole_index() {

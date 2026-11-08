@@ -415,6 +415,32 @@ later `assetcraft library` sync (which is `INSERT OR IGNORE`) never overwrites
 where a download landed, and a download can be tracked even before the item's
 metadata has been synced.
 
+### The app downloads from Purchased, not from the catalog (implemented, M5)
+
+```
+Home / Free card, signed in          Purchased card, signed in
+        │  Download?                          │  Download
+        ▼                                     ▼
+"Downloads start from your          owned_for(client, account_id, card id)
+ Purchased library", or the card           │  joins the card to the entry,
+ it already is: Open in Purchased          │  takes its artifactId
+                                             ▼
+                                   POST /e/artifacts/{id}/manifest → chunks
+```
+
+Fab answers the artifact manifest for an asset the account *owns* — the library
+endpoint is keyed by account id, and it is the only source of an `artifactId` —
+so a catalog card has nothing to download even when it is signed in and the
+button is green. Rather than offer a button that can only fail, the detail panel
+puts the action where the route exists: the Purchased view downloads, a catalog
+card the account owns says so and offers the jump (`Open in Purchased`, which
+selects the same asset once its page has arrived), and one the account does not
+own states where downloads start.
+
+The resolution picker sits with the settings that still mean something rather
+than next to a download: an artifact is the one build Fab chose to deliver, with
+no files left to choose between.
+
 ### Favourites and collections (implemented, M5)
 
 ```
@@ -702,11 +728,23 @@ All Fab paths are relative to `https://www.fab.com`.
 | License types | GET | `/i/taxonomy/licenses` | no |
 | Tag groups | GET | `/i/tags/groups` | no |
 | My library | GET | `/e/accounts/{account_id}/ue/library?count=&cursor=` | yes |
-| File download info | GET | `/p/egl/listings/{id}/asset-formats/{fmt}/files/{file}/download-info` | yes |
 | Artifact manifest | POST | `/e/artifacts/{artifact_id}/manifest` | yes |
 
 Epic account service: `https://account-public-service-prod03.ol.epicgames.com`,
 token endpoint `/account/api/oauth/token`.
+
+### The two vocabularies for one listing type
+
+Search filters by slug (`?listing_types=3d-model,material`), and any other value
+is a `400`: the accepted set is `3d-model`, `material`, `decal`,
+`tool-and-plugin`, `audio`, `vfx`, `animation`, `ui`, `game-system`, and
+`game-template` — `3d-scene` and `3d-plant` are Fab's *website* categories, not
+filter values. The library endpoint names the same things for people instead
+(`"3D"`, `"Tools & Plugins"`, `"Material & Textures"`) and adds labels with no
+search slug at all (`"Tutorials & Examples"`, `"Legacy"`), so an owned entry
+carries the label it was given and `assetcraft-gui::data::listing_slug_for_label`
+maps it onto the filter's slug. Labels with no slug keep the card untyped, which
+costs it the type filter and nothing else.
 
 ## Testing
 

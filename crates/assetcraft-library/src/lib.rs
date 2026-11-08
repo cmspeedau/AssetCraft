@@ -709,6 +709,9 @@ mod tests {
             // JSON round trip too — a lost artifact id means a silent "no
             // download route" after the next re-sync rather than before.
             artifact_id: Some("Rocky7e371bf75594V1".to_string()),
+            // So must the type and seller the Purchased view filters on.
+            listing_type: Some("3D".to_string()),
+            seller: Some("Quixel Megascans".to_string()),
         };
         library.insert(&original).unwrap();
 

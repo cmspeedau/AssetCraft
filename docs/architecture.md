@@ -668,6 +668,33 @@ special case: a Flatpak install exports a `org.blender.Blender` wrapper into
 the system and per-user `flatpak/exports/bin` directories, and running that
 path is the supported way to launch it, headless arguments included.
 
+### The artifact Fab delivers is the newest engine build, not the first listed
+
+`projectVersions[]` is one entry per engine target, and each carries its own
+`artifactId` — the token the artifact manifest takes. Fab's order is not
+chronological: "European Hornbeam" arrives as UE 5.0, then UE 5.1 v2, then UE
+4.27, and "Quixel Bridge" arrives with nine builds in scattered order from 5.1
+to 5.8. Taking the first entry, which is what a `find_map` does, silently
+delivers a five-year-old build of an asset the user owns a current one of; on
+this account 62 of 434 owned assets are ordered oldest-first.
+
+So the catalog takes the newest build *that has an artifact*, ranked by the
+highest `engineVersions[]` entry it covers, parsed as a number pair because
+`UE_5.10` outranks `UE_5.9` and a string compare says the opposite. A build with
+no artifact cannot win, because Fab will not serve it; a build that names no
+engine release ranks below one that does, and among equals Fab's own order
+decides. The chosen id is stored on the item, and `assetcraft library` prints it
+— with 434 assets, "what will this actually deliver" has to be answerable
+without opening the database by hand.
+
+A stored item carries the choice its sync made, so `assetcraft library` refreshes
+existing rows as well as adding new ones (`Library::refresh`): the artifact of
+the build Fab delivers today beats the one it named at the first sync, and the
+download's path is a different table for exactly that reason. Most of that
+refresh is Fab's churn rather than real change — the library rotates
+`image_previews` URLs on a large share of assets per request — which is why the
+sync says "refreshed from Fab" rather than "changed".
+
 ### The library stores an item as JSON, with one denormalised column
 
 The `assets` table holds the whole `LibraryItem` as JSON, plus a copy of the

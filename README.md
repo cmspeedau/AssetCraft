@@ -176,7 +176,11 @@ an installer for each platform, built from the same CI as everything else:
 | Linux (x86_64) | `assetcraft_<version>_amd64.deb` or `AssetCraft-<version>-x86_64.AppImage` | both binaries, a menu entry, and an icon |
 
 Whichever way you install, the app keeps itself current against the same
-Releases page — in the GUI, or with `assetcraft update` on the CLI.
+Releases page — in the GUI, or with `assetcraft update` on the CLI. The
+AppImage carries zsync update information too: its companion
+`AssetCraft-<version>-x86_64.AppImage.zsync` lets any zsync-capable
+updater (or `zsync` itself) move it to the latest release with a delta
+download.
 
 ### Raw binaries
 

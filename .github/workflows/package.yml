@@ -86,10 +86,20 @@ jobs:
           curl -sL -o appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool
-          # CI has no FUSE: the tool unpacks and runs itself instead. -n
-          # skips the update-information prompt.
-          APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool -n AssetCraft
-          mv AssetCraft-x86_64.AppImage "AssetCraft-${v}-x86_64.AppImage"
+          # zsyncmake (from the zsync package) turns the AppImage's trailing
+          # update information into a real delta feed: the .zsync next to it
+          # is what any zsync-capable updater fetches to move an installed
+          # AppImage to the latest release without downloading it whole.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zsync
+          # CI has no FUSE, so the tool unpacks and runs itself. -n skips
+          # the AppStream check; -u is the update information, a pointer to
+          # this repo's latest release, wildcarded over versions. The final
+          # name is handed to appimagetool (not renamed afterwards) because
+          # the .zsync embeds it.
+          APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool -n \
+            -u "gh-releases-zsync|cmspeedau|AssetCraft|latest|AssetCraft-*-x86_64.AppImage.zsync" \
+            AssetCraft "AssetCraft-${v}-x86_64.AppImage"
 
       - name: Downloadable artifacts (pull requests)
         if: github.event_name != 'push'
@@ -99,6 +109,7 @@ jobs:
           path: |
             assetcraft_*_amd64.deb
             AssetCraft-*.AppImage
+            AssetCraft-*.AppImage.zsync
 
       - name: Publish to the release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -110,7 +121,8 @@ jobs:
           gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" || true
           gh release upload "$GITHUB_REF_NAME" \
             "assetcraft_${{ steps.version.outputs.version }}_amd64.deb" \
-            "AssetCraft-${{ steps.version.outputs.version }}-x86_64.AppImage" --clobber
+            "AssetCraft-${{ steps.version.outputs.version }}-x86_64.AppImage" \
+            "AssetCraft-${{ steps.version.outputs.version }}-x86_64.AppImage.zsync" --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

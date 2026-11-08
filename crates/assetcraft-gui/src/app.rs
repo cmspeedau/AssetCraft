@@ -129,7 +129,14 @@ pub struct App {
     requested: HashSet<String>,
     details: HashMap<String, assetcraft_core::AssetDetail>,
     pub favorites: HashSet<String>,
+    /// Assets whose files are on disk: the `downloads` records the library
+    /// carries. Local shows exactly these, and a card is "already downloaded"
+    /// by the same test.
     pub local: HashSet<String>,
+    /// Assets the library index holds — owned metadata, whether or not the
+    /// files were ever fetched. Collections organise these; Local shows the
+    /// ones that landed.
+    held: HashSet<String>,
     pub view: View,
     pub filters: Filters,
     pub query: String,
@@ -158,6 +165,9 @@ pub struct App {
     owned_cards: Vec<Card>,
     owned_cursor: Option<String>,
     owned_loaded: bool,
+    /// A card to select once the Purchased view has loaded, set when a catalog
+    /// card the user owns is sent over from its detail panel.
+    pending_select: Option<String>,
     /// The user's choices, as read at startup (the worker re-reads them per
     /// download, so editing the file by hand still takes effect).
     settings: Settings,
@@ -192,6 +202,7 @@ impl Default for App {
             details: HashMap::new(),
             favorites: HashSet::new(),
             local: HashSet::new(),
+            held: HashSet::new(),
             view: View::Home,
             filters: Filters::default(),
             query: String::new(),
@@ -217,6 +228,7 @@ impl Default for App {
             owned_cards: Vec::new(),
             owned_cursor: None,
             owned_loaded: false,
+            pending_select: None,
             settings: Settings::default(),
             config: None,
             settings_error: None,
@@ -297,7 +309,8 @@ impl App {
 
     // ----- data flow -------------------------------------------------------
 
-    /// Read the local library into cards and remember which assets are held.
+    /// Read the local library into cards and remember which assets the index
+    /// holds and which are on disk.
     ///
     /// Favourites and collections are read in the same breath: they live in
     /// the same database, describe the same assets, and a view that showed
@@ -305,8 +318,20 @@ impl App {
     fn reload_local(&mut self) {
         let Some(library) = &self.library else {
             self.local_cards.clear();
+            self.local.clear();
+            self.held.clear();
             return;
         };
+        match index_cards(library) {
+            Ok(cards) => {
+                self.held = cards.iter().map(|card| card.id.clone()).collect();
+                self.library_error = None;
+            }
+            Err(error) => {
+                self.held.clear();
+                self.library_error = Some(error.to_string());
+            }
+        }
         match local_cards(library) {
             Ok(cards) => {
                 self.local = cards.iter().map(|card| card.id.clone()).collect();
@@ -314,6 +339,7 @@ impl App {
                 self.library_error = None;
             }
             Err(error) => {
+                self.local.clear();
                 self.local_cards.clear();
                 self.library_error = Some(error.to_string());
             }
@@ -389,6 +415,7 @@ impl App {
             if self.source == Source::Live && self.account.is_some() {
                 if self.owned_loaded {
                     self.cards = self.owned_cards.clone();
+                    self.select_pending();
                 } else {
                     self.loading = true;
                     self.request_owned(None);
@@ -532,6 +559,7 @@ impl App {
                             self.cards = self.owned_cards.clone();
                             self.owned_cursor = page.next_cursor;
                             self.owned_loaded = true;
+                            self.select_pending();
                             self.error = None;
                         }
                         Err(error) => {
@@ -761,6 +789,17 @@ impl App {
         }
     }
 
+    /// Select the card an "Open in Purchased" jump asked for, once its page
+    /// has arrived. A miss (the asset left the library) leaves the grid as is.
+    fn select_pending(&mut self) {
+        let Some(wanted) = self.pending_select.take() else {
+            return;
+        };
+        if let Some(i) = self.cards.iter().position(|card| card.id == wanted) {
+            self.select(i);
+        }
+    }
+
     pub fn select(&mut self, i: usize) {
         self.selected = Some(i);
         // Local items (and collection views, which are built from them) have
@@ -900,10 +939,13 @@ impl App {
         self.export_note = None;
     }
 
-    /// Downloads need an Epic session, which lands with the library milestone,
-    /// so only the demo catalog can queue one for now.
+    /// Whether a card can start a download.
+    ///
+    /// Fab only delivers the artifact of an asset the account owns, so live
+    /// downloads belong to the Purchased view; the demo catalog keeps its
+    /// simulated downloads.
     pub fn download_enabled(&self) -> bool {
-        self.source == Source::Demo || self.account.is_some()
+        self.source == Source::Demo || (self.view == View::Purchased && self.account.is_some())
     }
 
     pub fn start_download(&mut self, i: usize) {
@@ -933,6 +975,8 @@ impl App {
                 url: None,
                 source: Some("fab".to_owned()),
                 distribution_method: Some("download".to_owned()),
+                listing_type: card.listing_type.clone(),
+                seller: card.seller.clone(),
                 artifact_id: None,
                 categories: card
                     .listing_type
@@ -1735,11 +1779,12 @@ impl App {
         let live = self.source == Source::Live;
         let local_view = self.view == View::Local;
         let owned_view = self.view == View::Purchased;
-        // Collections organise what you hold, so they are offered for local
-        // assets in any view, read once for the frame; the boxes write through
-        // to the library the moment they are ticked.
-        let is_local = self.local.contains(&id);
-        let membership: Vec<i64> = if is_local {
+        // Collections organise what you hold — assets the library index
+        // knows — so they are offered for held assets in any view, downloaded
+        // yet or not, read once for the frame; the boxes write through to the
+        // library the moment they are ticked.
+        let is_held = self.held.contains(&id);
+        let membership: Vec<i64> = if is_held {
             self.library
                 .as_ref()
                 .and_then(|library| library.collections_for(&AssetId::new(id.clone())).ok())
@@ -1747,7 +1792,7 @@ impl App {
         } else {
             Vec::new()
         };
-        let collections_open = is_local && self.library.is_some();
+        let collections_open = is_held && self.library.is_some();
         let collections: Vec<Collection> = if collections_open {
             self.collections.clone()
         } else {
@@ -1949,38 +1994,55 @@ impl App {
 
             ui.separator();
             let downloaded = self.local.contains(&id);
-            let can_download = (!live || self.account.is_some()) && !local_view && !downloaded;
+            // Downloads come from the account's library: Fab only delivers the
+            // artifact of an asset you own, and the artifact is one build with
+            // no resolution to pick between. So the button runs in the
+            // Purchased view only; a catalog card the account owns offers the
+            // jump there, and one it does not says where downloads start.
+            let owned = owned_view || self.owned_cards.iter().any(|card| card.id == id);
+            let can_download =
+                (owned || !live) && (!live || self.account.is_some()) && !local_view && !downloaded;
+            let mut open_purchased = false;
             ui.horizontal(|ui| {
                 if can_download {
-                    egui::ComboBox::from_id_salt("resolution")
-                        .width(112.0)
-                        .selected_text(QUALITY_CHOICES[self.resolution])
-                        .show_ui(ui, |ui| {
-                            for (index, label) in QUALITY_CHOICES.iter().enumerate() {
-                                ui.selectable_value(&mut self.resolution, index, *label);
-                            }
-                        });
-                }
-                let button = egui::Button::new(
-                    egui::RichText::new("Download")
-                        .strong()
-                        .color(egui::Color32::WHITE),
-                )
-                .min_size(egui::vec2(if can_download { 0.0 } else { 132.0 }, 30.0))
-                .fill(if can_download {
-                    theme::GREEN
+                    let button = egui::Button::new(
+                        egui::RichText::new("Download")
+                            .strong()
+                            .color(egui::Color32::WHITE),
+                    )
+                    .min_size(egui::vec2(0.0, 30.0))
+                    .fill(theme::GREEN);
+                    if ui.add(button).clicked() {
+                        self.start_download(i);
+                    }
+                } else if live && owned && !local_view && !downloaded {
+                    if ui
+                        .button("Open in Purchased")
+                        .on_hover_text("Downloads start from the library you own")
+                        .clicked()
+                    {
+                        open_purchased = true;
+                    }
+                } else if live && !owned && !local_view && !downloaded {
+                    ui.label(
+                        egui::RichText::new("Downloads start from your Purchased library")
+                            .size(12.0)
+                            .color(theme::FG_MUTED),
+                    );
                 } else {
-                    theme::GREEN.gamma_multiply(0.35)
-                });
-                let response = ui.add_enabled(can_download, button);
-                if !can_download {
+                    let button = egui::Button::new(
+                        egui::RichText::new("Download")
+                            .strong()
+                            .color(egui::Color32::WHITE),
+                    )
+                    .min_size(egui::vec2(132.0, 30.0))
+                    .fill(theme::GREEN.gamma_multiply(0.35));
+                    let response = ui.add_enabled(false, button);
                     response.on_disabled_hover_text(if local_view || downloaded {
                         "Already in your local library"
                     } else {
                         "Sign in to Epic to download assets"
                     });
-                } else if response.clicked() {
-                    self.start_download(i);
                 }
 
                 if disk.is_some() {
@@ -2015,6 +2077,16 @@ impl App {
                     }
                 }
             });
+
+            if open_purchased {
+                // The Purchased view holds the same record under the library's
+                // own id; ask it to open there and select this asset once its
+                // page arrives.
+                self.view = View::Purchased;
+                self.active_collection = None;
+                self.pending_select = Some(id.clone());
+                self.start_search(ui.ctx());
+            }
         });
     }
 
@@ -2158,8 +2230,10 @@ impl eframe::App for App {
             self.start_search(ctx);
         }
 
-        let hits = self.hits();
-
+        // Hits are indexes into `cards`, and every panel below can replace
+        // that list — the nav switches views, the filter bar resets a search,
+        // the detail panel can send a card to Purchased. They are therefore
+        // resolved in the grid panel, last, against the list it will draw.
         if !self.jobs.is_empty() {
             egui::TopBottomPanel::bottom("downloads").show(ctx, |ui| self.downloads(ui));
         }
@@ -2320,6 +2394,7 @@ impl eframe::App for App {
                     return;
                 }
 
+                let hits = self.hits();
                 if hits.is_empty() {
                     let text = match self.view {
                         View::Local => "Nothing downloaded yet. Assets you acquire land here.",
@@ -2327,7 +2402,10 @@ impl eframe::App for App {
                             "This collection is empty. Tick a collection in an asset's \
                              detail panel to fill it."
                         }
-                        View::Purchased => "Your Epic library is empty.",
+                        View::Purchased if self.cards.is_empty() => "Your Epic library is empty.",
+                        View::Purchased => {
+                            "Nothing in your purchases matches this search and filter."
+                        }
                         _ if self.cards.is_empty() => "The catalog returned no listings.",
                         _ => "Nothing matches this view, search, and filters.",
                     };
@@ -2464,8 +2542,44 @@ fn dropdown<T: Copy + PartialEq>(
     );
 }
 
-/// The Local view's cards: every asset the library holds, by title.
+/// The Local view's cards: what your downloads put on disk, by title.
+///
+/// The `downloads` table, not the Fab-sourced index, decides membership. The
+/// index knows every asset the account owns — hundreds of rows after a sync —
+/// and an owned asset whose files were never fetched is not something Local
+/// can open, export, or verify: there is nothing on disk. So a record whose
+/// directory has since been moved or deleted drops out of the view too (the
+/// CLI's `library` still lists it as `[files missing]`). The card borrows the
+/// index's title and thumbnail where a sync supplied them and falls back to
+/// the bare id where it did not, so a download made before the first sync is
+/// still a card rather than an error.
 fn local_cards(library: &Library) -> assetcraft_core::Result<Vec<Card>> {
+    let index: HashMap<String, assetcraft_core::LibraryItem> = library
+        .list_all()?
+        .into_iter()
+        .map(|item| (item.asset_id.clone(), item))
+        .collect();
+    let mut cards: Vec<Card> = library
+        .list_downloads()?
+        .into_iter()
+        .filter(|(_, download)| download.path.exists())
+        .map(|(id, _)| match index.get(&id) {
+            Some(item) => Card::from_library_item(item),
+            None => Card::from_library_item(&assetcraft_core::LibraryItem {
+                asset_id: id.clone(),
+                title: id,
+                ..Default::default()
+            }),
+        })
+        .collect();
+    cards.sort_by_key(|card| card.title.to_lowercase());
+    Ok(cards)
+}
+
+/// Every asset the library index holds, by title. Collections draw their
+/// cards from this pool: a collection organises what you own, not only what
+/// has landed.
+fn index_cards(library: &Library) -> assetcraft_core::Result<Vec<Card>> {
     let mut cards: Vec<Card> = library
         .list_all()?
         .iter()
@@ -2475,13 +2589,13 @@ fn local_cards(library: &Library) -> assetcraft_core::Result<Vec<Card>> {
     Ok(cards)
 }
 
-/// One collection's cards: the local library's cards restricted to its
+/// One collection's cards: the library's cards restricted to its
 /// members, in the membership's own title order — a collection reads like
-/// the Local view it is drawn from. Members whose metadata row is gone
+/// the library list it is drawn from. Members whose metadata row is gone
 /// (a dropped row) leave a gap rather than an error: the files may still be
 /// on disk, but there is no card to draw without a title.
 fn collection_cards(library: &Library, id: i64) -> assetcraft_core::Result<Vec<Card>> {
-    let owned: HashMap<String, Card> = local_cards(library)?
+    let owned: HashMap<String, Card> = index_cards(library)?
         .into_iter()
         .map(|card| (card.id.clone(), card))
         .collect();
@@ -2527,36 +2641,12 @@ fn strip_tags(html: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{local_cards, short_date, store_locked, strip_tags, Source, View};
+    use super::{local_cards, short_date, strip_tags, Source, View};
     use assetcraft_core::LibraryItem;
     use assetcraft_library::Library;
 
     #[test]
-    fn the_store_waits_for_a_session() {
-        use super::Account;
-        let signed_out = &None::<Account>;
-        // A stand-in session: only its presence matters to the rule.
-        let signed_in = &Some(Account {
-            name: "Tester".to_owned(),
-        });
-        // Bridge parity: signed out, the marketplace views are empty windows.
-        for view in [View::Home, View::Free, View::Purchased] {
-            assert!(store_locked(Source::Live, signed_out, view), "{view:?}");
-        }
-        // A session unlocks them; the demo dataset was asked for on purpose.
-        for view in [View::Home, View::Free, View::Purchased] {
-            assert!(!store_locked(Source::Live, signed_in, view), "{view:?}");
-        }
-        assert!(!store_locked(Source::Demo, signed_out, View::Home));
-        // What is already the user's own never waits: the library and its
-        // views work signed out.
-        for view in [View::Local, View::Collections, View::Favorites] {
-            assert!(!store_locked(Source::Live, signed_out, view), "{view:?}");
-        }
-    }
-
-    #[test]
-    fn the_local_view_lists_library_items_by_title() {
+    fn the_local_view_lists_downloads_not_the_whole_index() {
         let library = Library::open_in_memory().unwrap();
         for (id, title) in [("b", "Beta Asset"), ("a", "Alpha Asset")] {
             library
@@ -2567,11 +2657,79 @@ mod tests {
                 })
                 .unwrap();
         }
+        // A synced-but-never-fetched asset is metadata, not something on
+        // disk: Local stays empty however full the index is.
+        assert!(
+            local_cards(&library).unwrap().is_empty(),
+            "434 index rows are not 434 downloads"
+        );
 
+        let dir = tempfile::tempdir().unwrap();
+        library
+            .record_download(&AssetId::new("b"), dir.path(), "ue")
+            .unwrap();
         let cards = local_cards(&library).unwrap();
-        let titles: Vec<&str> = cards.iter().map(|card| card.title.as_str()).collect();
-        assert_eq!(titles, ["Alpha Asset", "Beta Asset"]);
-        assert_eq!(cards[0].id, "a");
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].id, "b");
+        assert_eq!(
+            cards[0].title, "Beta Asset",
+            "the index still names the card"
+        );
+
+        // A download the index never saw is still on disk: titled by id
+        // until `assetcraft library` describes it.
+        library
+            .record_download(&AssetId::new("z"), dir.path(), "ue")
+            .unwrap();
+        let titles: Vec<String> = local_cards(&library)
+            .unwrap()
+            .iter()
+            .map(|card| card.title.clone())
+            .collect();
+        assert_eq!(titles, ["Beta Asset", "z"]);
+
+        // And a record whose directory has since been moved away is not on
+        // disk either; the CLI's [files missing] is its remaining resting
+        // place, not the Local view.
+        library
+            .record_download(&AssetId::new("b"), &dir.path().join("gone"), "ue")
+            .unwrap();
+        let titles: Vec<String> = local_cards(&library)
+            .unwrap()
+            .iter()
+            .map(|card| card.title.clone())
+            .collect();
+        assert_eq!(titles, ["z"]);
+    }
+
+    #[test]
+    fn collections_draw_on_the_library_index_not_only_downloads() {
+        let library = Library::open_in_memory().unwrap();
+        for (id, title) in [("b", "Beta"), ("a", "Alpha")] {
+            library
+                .insert(&LibraryItem {
+                    asset_id: id.to_owned(),
+                    title: title.to_owned(),
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        let collection = library.create_collection("Kept").unwrap();
+        for id in ["a", "b"] {
+            library
+                .add_to_collection(collection.id, &AssetId::new(id))
+                .unwrap();
+        }
+
+        // Nothing downloaded: the collection still lists both, because it
+        // organises what the account owns, not only what has landed.
+        let mut titles: Vec<String> = collection_cards(&library, collection.id)
+            .unwrap()
+            .iter()
+            .map(|card| card.title.clone())
+            .collect();
+        titles.sort();
+        assert_eq!(titles, ["Alpha", "Beta"]);
     }
 
     #[test]
@@ -2586,5 +2744,57 @@ mod tests {
         assert_eq!(strip_tags("<p>Hello <b>world</b></p>"), "Hello world");
         assert_eq!(strip_tags("Fish &amp; chips"), "Fish & chips");
         assert_eq!(strip_tags("a<br/>b"), "a b");
+    }
+
+    #[test]
+    fn live_downloads_belong_to_the_purchased_view() {
+        let mut app = super::App {
+            account: Some(super::Account {
+                name: "Tester".to_owned(),
+            }),
+            ..Default::default()
+        };
+        for view in [View::Home, View::Free, View::Favorites, View::Local] {
+            app.view = view;
+            assert!(!app.download_enabled(), "{view:?}");
+        }
+        app.view = View::Purchased;
+        assert!(app.download_enabled());
+        // Signed out, even Purchased has no download to offer.
+        app.account = None;
+        assert!(!app.download_enabled());
+        // The demo catalog keeps its simulated download.
+        app.source = Source::Demo;
+        app.view = View::Home;
+        assert!(app.download_enabled());
+    }
+
+    #[test]
+    fn purchased_cards_filter_on_the_type_the_library_reports() {
+        let item = |id: &str, label: &str| LibraryItem {
+            asset_id: id.to_owned(),
+            title: id.to_owned(),
+            listing_type: Some(label.to_owned()),
+            ..Default::default()
+        };
+
+        let mut app = super::App {
+            source: Source::Live,
+            view: View::Purchased,
+            cards: vec![
+                super::Card::from_library_item(&item("a", "3D")),
+                super::Card::from_library_item(&item("b", "Tools & Plugins")),
+                super::Card::from_library_item(&item("c", "Tutorials & Examples")),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(app.hits().len(), 3, "the whole library shows by default");
+
+        let model = super::data::LISTING_TYPES
+            .iter()
+            .position(|(slug, _)| *slug == "3d-model")
+            .expect("3D Model is a filter");
+        app.filters.listing_type = Some(model);
+        assert_eq!(app.hits(), vec![0], "3D maps onto the 3D Model filter");
     }
 }

@@ -550,6 +550,7 @@ async fn library(config: &Config, args: LibraryArgs) -> Result<()> {
 
     let mut fetched = 0usize;
     let mut added = 0usize;
+    let mut refreshed = 0usize;
     let mut cursor: Option<String> = None;
     loop {
         let page = client
@@ -560,6 +561,11 @@ async fn library(config: &Config, args: LibraryArgs) -> Result<()> {
         for item in &page.items {
             if library.insert(item).context("could not store an asset")? {
                 added += 1;
+            } else if library
+                .refresh(item)
+                .context("could not refresh an asset")?
+            {
+                refreshed += 1;
             }
         }
         // Stop when the server offers no further cursor, or repeats an empty
@@ -571,7 +577,8 @@ async fn library(config: &Config, args: LibraryArgs) -> Result<()> {
     }
 
     println!(
-        "Fetched {fetched} assets ({added} new). The local library holds {} assets.\n",
+        "Fetched {fetched} assets ({added} new, {refreshed} refreshed from Fab). The local \
+         library holds {} assets.\n",
         library.len()?
     );
 
@@ -1308,6 +1315,13 @@ fn print_library_items(items: &[LibraryItem], media: &MediaCache, library: &Libr
         }
         if let Some(url) = item.url.as_deref() {
             println!("  url: {url}");
+        }
+        // The build Fab will deliver. Naming it here is what makes "this
+        // asset has no download route" and "it delivered the UE4 build"
+        // answerable without reading the library database by hand.
+        match item.artifact_id.as_deref() {
+            Some(artifact) => println!("  artifact: {artifact}"),
+            None => println!("  artifact: none — no Unreal build Fab can deliver"),
         }
         if let Some(url) = item.thumbnail_url() {
             match media.cached_path(url) {

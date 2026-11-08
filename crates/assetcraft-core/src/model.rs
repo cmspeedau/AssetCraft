@@ -263,6 +263,15 @@ pub struct LibraryItem {
     pub source: Option<String>,
     /// How the asset is distributed.
     pub distribution_method: Option<String>,
+    /// The type the library reports, as it labels it for people ("3D",
+    /// "Tools & Plugins"). Search takes slugs instead, so the UI maps this
+    /// through its own table; `serde(default)` keeps rows written before the
+    /// field existed loadable, they simply need a library re-sync.
+    #[serde(default)]
+    pub listing_type: Option<String>,
+    /// The seller or publisher, when the library reports one.
+    #[serde(default)]
+    pub seller: Option<String>,
     /// Categories the asset belongs to.
     pub categories: Vec<Category>,
     /// Images for the asset.

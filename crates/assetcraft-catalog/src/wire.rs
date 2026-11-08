@@ -227,6 +227,11 @@ pub struct LibraryAsset {
     pub url: Option<String>,
     pub source: Option<String>,
     pub distribution_method: Option<String>,
+    /// The type as the library labels it ("3D", "Tools & Plugins"), not the
+    /// search API's slug.
+    pub listing_type: Option<String>,
+    /// The seller or publisher's display name.
+    pub seller: Option<String>,
     #[serde(default, deserialize_with = "null_to_empty")]
     pub categories: Vec<LibraryCategory>,
     #[serde(default, deserialize_with = "null_to_empty")]

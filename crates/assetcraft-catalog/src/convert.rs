@@ -183,6 +183,8 @@ pub fn library_item_from_wire(asset: wire::LibraryAsset) -> LibraryItem {
         url: asset.url,
         source: asset.source,
         distribution_method: asset.distribution_method,
+        listing_type: asset.listing_type,
+        seller: asset.seller,
         categories: asset
             .categories
             .into_iter()
@@ -365,12 +367,14 @@ mod tests {
     }
 
     #[test]
-    fn library_item_maps_images_and_categories() {
+    fn library_item_maps_images_categories_type_and_seller() {
         let asset = wire::LibraryAsset {
             asset_id: "asset-1".to_string(),
             asset_namespace: Some("ue".to_string()),
             title: Some("Highland Rock".to_string()),
             description: Some("desc".to_string()),
+            listing_type: Some("3D".to_string()),
+            seller: Some("Quixel Megascans".to_string()),
             categories: vec![wire::LibraryCategory {
                 id: Some("c1".to_string()),
                 name: Some("Rocks".to_string()),
@@ -389,6 +393,8 @@ mod tests {
         assert_eq!(item.asset_id, "asset-1");
         assert_eq!(item.namespace, "ue");
         assert_eq!(item.categories[0].name.as_deref(), Some("Rocks"));
+        assert_eq!(item.listing_type.as_deref(), Some("3D"));
+        assert_eq!(item.seller.as_deref(), Some("Quixel Megascans"));
         assert_eq!(item.images[0].width, Some(1024));
         // A non-numeric dimension is dropped rather than failing the whole item.
         assert_eq!(item.images[0].height, None);

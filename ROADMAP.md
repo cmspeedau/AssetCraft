@@ -254,6 +254,10 @@ Make it a product.
       with the CLI).
 - [ ] Installers/artifacts for Windows (`.msi`/`.zip`), macOS (`.dmg`), Linux
       (`.AppImage`/`.deb`).
+- [x] Auto-update: release feed check, SHA-256-verified download, in-place
+      swap, restart prompt; `assetcraft update` on the CLI; a `v*` tag
+      publishes the feed via `.github/workflows/release.yml`.
+- [ ] Onboarding docs and screenshots in the README.
 - [ ] Auto-update.
 - [x] Onboarding docs and screenshots in the README.
 

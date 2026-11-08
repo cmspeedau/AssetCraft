@@ -348,6 +348,7 @@ dependencies = [
  "assetcraft-download",
  "assetcraft-library",
  "assetcraft-transfer",
+ "assetcraft-update",
  "chrono",
  "clap",
  "serde_json",
@@ -407,6 +408,7 @@ dependencies = [
  "assetcraft-dcc-blender",
  "assetcraft-library",
  "assetcraft-transfer",
+ "assetcraft-update",
  "chrono",
  "eframe",
  "egui",
@@ -435,6 +437,22 @@ dependencies = [
  "assetcraft-core",
  "assetcraft-download",
  "sha1",
+]
+
+[[package]]
+name = "assetcraft-update"
+version = "0.1.0"
+dependencies = [
+ "assetcraft-core",
+ "httpmock",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "url",
 ]
 
 [[package]]

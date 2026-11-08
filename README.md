@@ -120,7 +120,11 @@ what already works and what is still landing.
 - A Collections view for the local library: named groups, opened like a folder,
   with membership edited from the asset detail panel.
 - A Settings dialog over the same `settings.toml` the CLI reads.
-- Auto-update.
+- Auto-update: at startup the app asks its GitHub Releases feed for a newer
+  build and, if one carries a verified checksum for this platform, offers it
+  in a banner — download, SHA-256 check against the release's own digest,
+  in-place swap, and a restart button. Opt out in Settings, or run
+  `assetcraft update` from the CLI.
 
 See [ROADMAP.md](ROADMAP.md) for the order in which these ship.
 
@@ -141,6 +145,7 @@ headless CLI.
 | `assetcraft-transfer` | lib | Resolves an owned asset and brings it down: formats → signed download info → manifest → chunks → verified files. |
 | `assetcraft-library` | lib | Local SQLite library index, thumbnails, dedup, offline browse. |
 | `assetcraft-dcc-blender` | adapter | Blender exporter and Python addon bridge. |
+| `assetcraft-update` | lib | Auto-update: release feed, checksum-verified download, in-place binary swap. |
 | `assetcraft-cli` | bin | Headless binary for scripted / CI workflows. |
 | `assetcraft-gui` | bin | egui desktop app: browse, search, filter, download, and browse the local library. |
 
@@ -323,7 +328,7 @@ AssetCraft follows platform conventions for config, cache, and data directories
 | Path | Contents |
 | --- | --- |
 | Config | `settings.toml` (below) and other configuration files. |
-| Cache | API response cache, thumbnails, partial downloads. |
+| Cache | API response cache, thumbnails, partial downloads, staged updates. |
 | Data | Local library index (SQLite: owned assets, download records, favourites, collections) and downloaded assets. |
 | Tokens | OAuth credentials, in the OS keyring where one answers; otherwise an owner-only private file, never world-readable. |
 
@@ -340,6 +345,10 @@ default_quality = "4K"
 # Root for downloads: one directory per asset id under this one.
 # Leave unset for the standard asset directory under the data directory.
 download_dir = "/media/assets"
+
+# Ask the release feed for a newer version when the app starts (default: yes).
+# Nothing ever installs without the banner's Update button.
+auto_update = true
 ```
 
 Both binaries read the file at the point of use, so an edit takes effect on the

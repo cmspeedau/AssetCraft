@@ -16,6 +16,18 @@ pub const DEFAULT_ACCOUNT_BASE_URL: &str = "https://account-public-service-prod0
 /// Default base URL for the Epic web id service.
 pub const DEFAULT_EPIC_ID_BASE_URL: &str = "https://www.epicgames.com";
 
+/// Default update feed: this repository's GitHub Releases, newest page first.
+/// The feed is an API URL rather than the release *pages* because the API is
+/// what carries each asset's computed `sha256` digest — the thing that makes
+/// an update safe to run.
+pub const DEFAULT_UPDATE_FEED_URL: &str =
+    "https://api.github.com/repos/cmspeedau/AssetCraft/releases?per_page=100";
+
+/// The version every AssetCraft binary reports and updates are judged
+/// against. Every crate inherits the workspace version, so one constant
+/// describes both the CLI and the GUI.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// User agent sent with every request. Fab sits behind a bot filter that
 /// rejects some default clients, so a descriptive agent matters.
 pub const DEFAULT_USER_AGENT: &str = concat!(
@@ -69,6 +81,12 @@ impl Paths {
         self.cache_dir.join("thumbnails")
     }
 
+    /// Where a downloaded-but-not-yet-installed update binary is staged
+    /// before it is swapped over the running executable.
+    pub fn updates_dir(&self) -> PathBuf {
+        self.cache_dir.join("updates")
+    }
+
     /// Where downloaded assets are laid out, one directory per asset id.
     ///
     /// This is the standard home for a download's reassembled files: the place
@@ -110,6 +128,9 @@ pub struct Config {
     pub account_base_url: String,
     /// Base URL for the Epic web id service (used to start a login).
     pub epic_id_base_url: String,
+    /// Where to look for release announcements: GitHub's Releases API for a
+    /// repository, or a mirror of that same JSON shape.
+    pub update_feed_url: String,
     /// User agent sent with every request.
     pub user_agent: String,
     /// Platform directories.
@@ -147,6 +168,7 @@ impl Config {
             fab_base_url: DEFAULT_FAB_BASE_URL.to_string(),
             account_base_url: DEFAULT_ACCOUNT_BASE_URL.to_string(),
             epic_id_base_url: DEFAULT_EPIC_ID_BASE_URL.to_string(),
+            update_feed_url: DEFAULT_UPDATE_FEED_URL.to_string(),
             user_agent: DEFAULT_USER_AGENT.to_string(),
             paths: Paths::rooted_at(root),
         }
@@ -184,6 +206,11 @@ pub struct Settings {
     /// Where downloads land, one directory per asset id under this root.
     /// `None` means [`Paths::assets_dir`]: the standard place.
     pub download_dir: Option<PathBuf>,
+    /// Whether the app asks its update feed whether a newer release exists
+    /// when it starts. `None` is the promise the README makes — yes, it
+    /// checks; `Some(false)` is the user opting out. The check never
+    /// installs anything by itself.
+    pub auto_update: Option<bool>,
 }
 
 impl Settings {
@@ -286,6 +313,10 @@ mod tests {
             PathBuf::from("/tmp/assetcraft-test/cache/thumbnails")
         );
         assert_eq!(
+            paths.updates_dir(),
+            PathBuf::from("/tmp/assetcraft-test/cache/updates")
+        );
+        assert_eq!(
             paths.assets_dir(),
             PathBuf::from("/tmp/assetcraft-test/data/assets")
         );
@@ -310,11 +341,13 @@ mod tests {
         let settings = Settings {
             default_quality: Some("4K".to_string()),
             download_dir: Some(PathBuf::from("/media/assets")),
+            auto_update: Some(false),
         };
         settings.save(&paths).unwrap();
         // The file says what it is, and stays hand-editable.
         let text = std::fs::read_to_string(paths.settings_file()).unwrap();
         assert!(text.contains("default_quality"), "{text}");
+        assert!(text.contains("auto_update"), "{text}");
         assert_eq!(Settings::load(&paths).unwrap(), settings);
     }
 
@@ -371,6 +404,7 @@ mod tests {
         let config = Config::rooted_at("/tmp/assetcraft-test");
         assert_eq!(config.fab_base_url, DEFAULT_FAB_BASE_URL);
         assert_eq!(config.account_base_url, DEFAULT_ACCOUNT_BASE_URL);
+        assert_eq!(config.update_feed_url, DEFAULT_UPDATE_FEED_URL);
         assert!(config.user_agent.starts_with("AssetCraft/"));
     }
 

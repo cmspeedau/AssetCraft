@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import stub_bpy
 
@@ -154,7 +155,20 @@ class PanelDrawTest(unittest.TestCase):
         return panel.layout
 
     def test_without_a_library_it_points_at_the_preferences(self):
-        layout = self.draw("")
+        # An empty preference falls back to the app's default export folder,
+        # so "no library" means that fallback must be absent too. Aim HOME,
+        # XDG and APPDATA at an empty temporary folder so a developer's own
+        # AssetCraft exports cannot answer for the missing preference.
+        with tempfile.TemporaryDirectory() as empty_home:
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "HOME": empty_home,
+                    "XDG_DATA_HOME": empty_home,
+                    "APPDATA": empty_home,
+                },
+            ):
+                layout = self.draw("")
         self.assertTrue(any("preferences" in text.lower() for text in layout.texts()))
         self.assertEqual(layout.operator_ids(), [])
 

@@ -183,6 +183,8 @@ pub fn library_item_from_wire(asset: wire::LibraryAsset) -> LibraryItem {
         url: asset.url,
         source: asset.source,
         distribution_method: asset.distribution_method,
+        listing_type: asset.listing_type,
+        seller: asset.seller,
         categories: asset
             .categories
             .into_iter()
@@ -204,13 +206,54 @@ pub fn library_item_from_wire(asset: wire::LibraryAsset) -> LibraryItem {
                 md5: image.md5,
             })
             .collect(),
-        // The first build that carries an artifact is the one Fab will
-        // deliver; builds without one are engine targets, not downloads.
-        artifact_id: asset
-            .project_versions
-            .into_iter()
-            .find_map(|version| version.artifact_id.filter(|id| !id.is_empty())),
+        // Fab lists an asset's engine builds in no particular order, and the
+        // one first in the array is often the oldest: "European Hornbeam"
+        // arrives as UE5.0, UE5.1-v2, UE4.27. Take the newest build that has
+        // an artifact, because that is the one a current editor can open.
+        artifact_id: newest_artifact(&asset.project_versions),
     }
+}
+
+/// The artifact of the newest engine build that has one.
+///
+/// Fab's `projectVersions[]` is one entry per engine target, each with its own
+/// `artifactId`, and the order is Fab's, not chronological. A build with no
+/// artifact is an engine target Fab will not deliver, so it cannot win.
+pub fn newest_artifact(versions: &[wire::ProjectVersion]) -> Option<String> {
+    let mut best: Option<(EngineVersion, &String)> = None;
+    for version in versions {
+        let Some(id) = version.artifact_id.as_ref().filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        let newest = version
+            .engine_versions
+            .iter()
+            .filter_map(|raw| engine_version(raw))
+            .max()
+            .unwrap_or(EngineVersion::UNRATED);
+        match best {
+            // Ties keep the earlier entry: two builds of one engine release
+            // differ by more than the release, and Fab's order is the only
+            // signal about which it intends.
+            Some((rank, _)) if rank >= newest => {}
+            _ => best = Some((newest, id)),
+        }
+    }
+    best.map(|(_, id)| id.clone())
+}
+
+/// One engine release, as an orderable pair. `"UE_5.10"` outranks `"UE_5.9"`,
+/// which a string compare would get backwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct EngineVersion {
+    major: u32,
+    minor: u32,
+}
+
+impl EngineVersion {
+    /// A build that names no engine release sorts below one that does, so a
+    /// rated build wins when both are offered. No engine is version `0.0`.
+    const UNRATED: Self = Self { major: 0, minor: 0 };
 }
 
 /// Map download info into the domain type.
@@ -232,6 +275,18 @@ pub fn download_info_from_wire(info: wire::DownloadInfo) -> DownloadInfo {
 }
 
 /// Image dimensions arrive as strings; a non-numeric value is simply dropped.
+/// Parse one `engineVersions[]` entry: `UE_5.1` -> `5.1`. Anything unexpected
+/// (`UE_5`, an empty string, a different engine) has no rank rather than a
+/// wrong one.
+fn engine_version(raw: &str) -> Option<EngineVersion> {
+    let rest = raw.strip_prefix("UE_")?;
+    let (major, minor) = rest.split_once('.')?;
+    Some(EngineVersion {
+        major: major.parse().ok()?,
+        minor: minor.parse().ok()?,
+    })
+}
+
 fn parse_dimension(value: Option<String>) -> Option<u32> {
     value.and_then(|raw| raw.parse().ok())
 }
@@ -239,6 +294,116 @@ fn parse_dimension(value: Option<String>) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_newest_engine_build_wins_however_fab_orders_them() {
+        // The real shape of "European Hornbeam": three engine targets, and the
+        // first is UE 5.0 while the newest is UE 5.1 v2.
+        let versions = vec![
+            wire::ProjectVersion {
+                artifact_id: Some("MS_Hornbeam_UE5".to_owned()),
+                engine_versions: vec!["UE_5.0".to_owned()],
+            },
+            wire::ProjectVersion {
+                artifact_id: Some("MS_Hornbeam_UE51_V2".to_owned()),
+                engine_versions: vec![
+                    "UE_5.1".to_owned(),
+                    "UE_5.2".to_owned(),
+                    "UE_5.6".to_owned(),
+                ],
+            },
+            wire::ProjectVersion {
+                artifact_id: Some("MS_Hornbeam_UE4".to_owned()),
+                engine_versions: vec!["UE_4.25".to_owned(), "UE_4.27".to_owned()],
+            },
+        ];
+        assert_eq!(
+            newest_artifact(&versions).as_deref(),
+            Some("MS_Hornbeam_UE51_V2")
+        );
+
+        // A nine-build asset in Fab's own scattered order ("Quixel Bridge").
+        let bridge = vec![
+            ("QuixelBridge_5.1", "UE_5.1"),
+            ("QuixelBridge_5.3", "UE_5.3"),
+            ("QuixelBridge_5.0", "UE_5.0"),
+            ("QuixelBridge_5.5", "UE_5.5"),
+            ("QuixelBridge_5.8", "UE_5.8"),
+        ]
+        .into_iter()
+        .map(|(artifact, engine)| wire::ProjectVersion {
+            artifact_id: Some(artifact.to_owned()),
+            engine_versions: vec![engine.to_owned()],
+        })
+        .collect::<Vec<_>>();
+        assert_eq!(
+            newest_artifact(&bridge).as_deref(),
+            Some("QuixelBridge_5.8"),
+            "the newest release, not the last entry"
+        );
+
+        // Ordering is numeric: 5.10 is newer than 5.9, which a string
+        // comparison would get backwards.
+        let ten_vs_nine = vec![
+            wire::ProjectVersion {
+                artifact_id: Some("Ten".to_owned()),
+                engine_versions: vec!["UE_5.9".to_owned()],
+            },
+            wire::ProjectVersion {
+                artifact_id: Some("Nine".to_owned()),
+                engine_versions: vec!["UE_5.10".to_owned()],
+            },
+        ];
+        assert_eq!(newest_artifact(&ten_vs_nine).as_deref(), Some("Nine"));
+    }
+
+    #[test]
+    fn a_build_with_no_artifact_cannot_win() {
+        // Fab will not deliver a build without an artifact, so an older
+        // deliverable build beats a newer one it cannot serve.
+        let versions = vec![
+            wire::ProjectVersion {
+                artifact_id: None,
+                engine_versions: vec!["UE_5.9".to_owned()],
+            },
+            wire::ProjectVersion {
+                artifact_id: Some("".to_owned()),
+                engine_versions: vec!["UE_5.8".to_owned()],
+            },
+            wire::ProjectVersion {
+                artifact_id: Some("Old_UE5".to_owned()),
+                engine_versions: vec!["UE_5.1".to_owned()],
+            },
+        ];
+        assert_eq!(newest_artifact(&versions).as_deref(), Some("Old_UE5"));
+        assert_eq!(newest_artifact(&versions[..2]), None);
+        assert_eq!(newest_artifact(&[]), None);
+    }
+
+    #[test]
+    fn an_unrated_build_sorts_below_a_rated_one() {
+        let versions = vec![
+            wire::ProjectVersion {
+                artifact_id: Some("NoVersions".to_owned()),
+                engine_versions: vec![],
+            },
+            // `UE_5` names no minor release, so it has no rank either.
+            wire::ProjectVersion {
+                artifact_id: Some("HalfVersion".to_owned()),
+                engine_versions: vec!["UE_5".to_owned()],
+            },
+            wire::ProjectVersion {
+                artifact_id: Some("Rated".to_owned()),
+                engine_versions: vec!["UE_4.27".to_owned()],
+            },
+        ];
+        assert_eq!(newest_artifact(&versions).as_deref(), Some("Rated"));
+        // With nothing rated at all, Fab's own order decides.
+        assert_eq!(
+            newest_artifact(&versions[..2]).as_deref(),
+            Some("NoVersions")
+        );
+    }
 
     #[test]
     fn prefers_explicit_thumbnail_over_first_image() {
@@ -365,12 +530,14 @@ mod tests {
     }
 
     #[test]
-    fn library_item_maps_images_and_categories() {
+    fn library_item_maps_images_categories_type_and_seller() {
         let asset = wire::LibraryAsset {
             asset_id: "asset-1".to_string(),
             asset_namespace: Some("ue".to_string()),
             title: Some("Highland Rock".to_string()),
             description: Some("desc".to_string()),
+            listing_type: Some("3D".to_string()),
+            seller: Some("Quixel Megascans".to_string()),
             categories: vec![wire::LibraryCategory {
                 id: Some("c1".to_string()),
                 name: Some("Rocks".to_string()),
@@ -389,6 +556,8 @@ mod tests {
         assert_eq!(item.asset_id, "asset-1");
         assert_eq!(item.namespace, "ue");
         assert_eq!(item.categories[0].name.as_deref(), Some("Rocks"));
+        assert_eq!(item.listing_type.as_deref(), Some("3D"));
+        assert_eq!(item.seller.as_deref(), Some("Quixel Megascans"));
         assert_eq!(item.images[0].width, Some(1024));
         // A non-numeric dimension is dropped rather than failing the whole item.
         assert_eq!(item.images[0].height, None);

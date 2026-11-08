@@ -255,7 +255,7 @@ Make it a product.
 - [ ] Installers/artifacts for Windows (`.msi`/`.zip`), macOS (`.dmg`), Linux
       (`.AppImage`/`.deb`).
 - [ ] Auto-update.
-- [ ] Onboarding docs and screenshots in the README.
+- [x] Onboarding docs and screenshots in the README.
 
 **DoD:** A non-developer can install AssetCraft, sign in, download an asset, and
 export it to Blender without touching a terminal.

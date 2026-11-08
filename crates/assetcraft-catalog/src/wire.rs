@@ -227,6 +227,11 @@ pub struct LibraryAsset {
     pub url: Option<String>,
     pub source: Option<String>,
     pub distribution_method: Option<String>,
+    /// The type as the library labels it ("3D", "Tools & Plugins"), not the
+    /// search API's slug.
+    pub listing_type: Option<String>,
+    /// The seller or publisher's display name.
+    pub seller: Option<String>,
     #[serde(default, deserialize_with = "null_to_empty")]
     pub categories: Vec<LibraryCategory>,
     #[serde(default, deserialize_with = "null_to_empty")]
@@ -244,6 +249,9 @@ pub struct LibraryAsset {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectVersion {
     pub artifact_id: Option<String>,
+    /// The engine releases this build covers, as `"UE_5.1"`, `"UE_4.27"`.
+    #[serde(default, deserialize_with = "null_to_empty")]
+    pub engine_versions: Vec<String>,
 }
 
 /// A category on a library asset.
@@ -519,7 +527,11 @@ mod tests {
                 "source": "fab",
                 "distributionMethod": "asset_pack",
                 "categories": [{"id": "cat-1", "name": "Rocks"}],
-                "images": [{"url": "https://media/rock.jpg", "type": "thumbnail", "width": "1024", "height": "1024"}]
+                "images": [{"url": "https://media/rock.jpg", "type": "thumbnail", "width": "1024", "height": "1024"}],
+                "projectVersions": [
+                    {"artifactId": "Rock_UE5", "engineVersions": ["UE_5.0"], "targetPlatforms": ["Windows"]},
+                    {"artifactId": "Rock_UE51", "engineVersions": ["UE_5.1", "UE_5.6"], "targetPlatforms": null}
+                ]
             }]
         }"#;
         let library: Library = serde_json::from_str(json).unwrap();
@@ -533,6 +545,16 @@ mod tests {
         assert_eq!(asset.asset_id, "asset-1");
         assert_eq!(asset.asset_namespace.as_deref(), Some("ue"));
         assert_eq!(asset.categories[0].name.as_deref(), Some("Rocks"));
+        assert_eq!(asset.project_versions.len(), 2);
+        assert_eq!(
+            asset.project_versions[0].engine_versions,
+            vec!["UE_5.0".to_owned()]
+        );
+        // A null list reads as empty rather than failing the whole page.
+        assert_eq!(
+            asset.project_versions[1].engine_versions,
+            vec!["UE_5.1".to_owned(), "UE_5.6".to_owned()]
+        );
         assert_eq!(asset.images[0].width.as_deref(), Some("1024"));
         assert_eq!(asset.images[0].kind.as_deref(), Some("thumbnail"));
     }

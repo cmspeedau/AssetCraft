@@ -170,6 +170,33 @@ impl Library {
         Ok(changed > 0)
     }
 
+    /// Replace a stored item with a fresher copy, reporting whether it changed.
+    ///
+    /// A re-sync carries metadata Fab has since corrected: a title, the
+    /// listing type, the artifact of the build it now delivers. Nothing the
+    /// user chose lives in this row — a download's path is its own table, and
+    /// favourites and collections key on the asset id — so refreshing it can
+    /// undo no local decision. It updates the one row and adds nothing: an
+    /// asset the library does not hold is [`Library::insert`]'s to add.
+    ///
+    /// Row-level churn is Fab's, not a bug here: the library hands out fresh
+    /// `image_previews` URLs on many assets with every request, so a sync of a
+    /// few hundred assets rewrites a large share of them even when nothing else
+    /// moved. The URL that works now beats the one that worked at the last
+    /// sync, so this is the row being current rather than being touched.
+    pub fn refresh(&self, item: &LibraryItem) -> Result<bool> {
+        let json = serde_json::to_string(item)?;
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE assets SET title = ?2, item = ?3
+                 WHERE id = ?1 AND item IS NOT ?3",
+                rusqlite::params![item.asset_id, item.title, json],
+            )
+            .map_err(database)?;
+        Ok(changed > 0)
+    }
+
     /// Look up an asset by id.
     pub fn get(&self, id: &AssetId) -> Result<Option<LibraryItem>> {
         let mut rows = self.items(
@@ -297,6 +324,35 @@ impl Library {
             .optional()
             .map_err(database)?;
         Ok(found)
+    }
+
+    /// Where every downloaded asset's files were recorded, newest table order
+    /// left to the caller.
+    ///
+    /// The GUI's Local view is the consumer that matters: what counts as
+    /// downloaded is this table, not the Fab-sourced index, which knows every
+    /// asset the account owns whether or not its files were ever fetched.
+    pub fn list_downloads(&self) -> Result<Vec<(String, Download)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT asset_id, path, format FROM downloads")
+            .map_err(database)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    Download {
+                        path: PathBuf::from(row.get::<_, String>(1)?),
+                        format: row.get::<_, String>(2)?,
+                    },
+                ))
+            })
+            .map_err(database)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(database)?);
+        }
+        Ok(out)
     }
 
     /// Whether the library has a record of an asset's downloaded files.
@@ -668,6 +724,42 @@ mod tests {
     }
 
     #[test]
+    fn a_resync_refreshes_the_stored_item_but_not_the_download() {
+        let library = library();
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = item("a", "Hornbeam");
+        first.artifact_id = Some("MS_Hornbeam_UE4".to_owned());
+        library.insert(&first).unwrap();
+        library
+            .record_download(&AssetId::new("a"), dir.path(), "ue")
+            .unwrap();
+
+        // Fab's newer sync says the deliverable build is a different one.
+        let mut fresher = item("a", "European Hornbeam");
+        fresher.artifact_id = Some("MS_Hornbeam_UE51_V2".to_owned());
+        assert!(library.refresh(&fresher).unwrap());
+
+        let stored = library.get(&AssetId::new("a")).unwrap().unwrap();
+        assert_eq!(stored.title, "European Hornbeam");
+        assert_eq!(
+            stored.artifact_id.as_deref(),
+            Some("MS_Hornbeam_UE51_V2"),
+            "the re-sync's artifact wins over the one first stored"
+        );
+        // Where the user's files landed is theirs, not Fab's to overwrite.
+        let download = library.download(&AssetId::new("a")).unwrap().unwrap();
+        assert_eq!(download.path, dir.path().to_path_buf());
+        assert_eq!(download.format, "ue");
+
+        // Syncing the same data again changes nothing.
+        assert!(!library.refresh(&fresher).unwrap());
+        // A resync never adds an asset the account no longer has.
+        let other = item("b", "New Only");
+        assert!(!library.refresh(&other).unwrap());
+        assert_eq!(library.len().unwrap(), 1);
+    }
+
+    #[test]
     fn get_contains_and_remove_track_membership() {
         let library = library();
         library.insert(&item("a", "Rocks")).unwrap();
@@ -709,6 +801,9 @@ mod tests {
             // JSON round trip too — a lost artifact id means a silent "no
             // download route" after the next re-sync rather than before.
             artifact_id: Some("Rocky7e371bf75594V1".to_string()),
+            // So must the type and seller the Purchased view filters on.
+            listing_type: Some("3D".to_string()),
+            seller: Some("Quixel Megascans".to_string()),
         };
         library.insert(&original).unwrap();
 
@@ -855,6 +950,23 @@ mod tests {
 
         assert!(library.get(&AssetId::new("a")).unwrap().is_none());
         assert!(library.is_downloaded(&AssetId::new("a")).unwrap());
+    }
+
+    #[test]
+    fn listing_downloads_reports_every_record_and_only_records() {
+        let library = library();
+        library.insert(&item("a", "Rock")).unwrap();
+        library.insert(&item("b", "Moss")).unwrap();
+        library
+            .record_download(&AssetId::new("b"), Path::new("/lib/b"), "glb")
+            .unwrap();
+
+        let downloads = library.list_downloads().unwrap();
+        assert_eq!(downloads.len(), 1, "the index is not the download list");
+        let (id, found) = &downloads[0];
+        assert_eq!(id, "b");
+        assert_eq!(found.path, PathBuf::from("/lib/b"));
+        assert_eq!(found.format, "glb");
     }
 
     #[test]

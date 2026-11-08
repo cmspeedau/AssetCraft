@@ -48,17 +48,20 @@ impl Card {
 
     /// Project a library record into the same card the catalog uses.
     ///
-    /// Library items carry no seller, rating, or price, so those stay empty;
-    /// the category stands in for the listing type.
+    /// Library items carry no rating or price, and their categories are
+    /// genres rather than listing types, so the type comes from the label the
+    /// library reports (`3D`, `Tools & Plugins`) mapped onto the filter's
+    /// slugs; the seller comes through when the library names one.
     pub fn from_library_item(item: &LibraryItem) -> Self {
         let listing_type = item
-            .categories
-            .first()
-            .and_then(|category| category.name.clone().or_else(|| category.slug.clone()));
+            .listing_type
+            .as_deref()
+            .and_then(listing_slug_for_label)
+            .map(str::to_owned);
         Self {
             id: item.asset_id.clone(),
             title: item.title.clone(),
-            seller: None,
+            seller: item.seller.clone(),
             listing_type,
             free: false,
             rating: None,
@@ -102,16 +105,44 @@ pub fn hue_for(key: &str) -> f32 {
 }
 
 /// The listing types the filter bar offers, as `(Fab slug, label)`.
+///
+/// These are the slugs `GET /i/listings/search?listing_types=` accepts; any
+/// other value is a 400. Fab's *library* endpoint names the same types for
+/// people instead, which [`listing_slug_for_label`] maps back.
 pub const LISTING_TYPES: &[(&str, &str)] = &[
     ("3d-model", "3D Model"),
-    ("3d-scene", "3D Scene"),
-    ("3d-plant", "3D Plant"),
     ("material", "Material"),
     ("decal", "Decal"),
     ("tool-and-plugin", "Tool & Plugin"),
     ("audio", "Audio"),
     ("vfx", "VFX"),
+    ("animation", "Animation"),
+    ("ui", "UI"),
+    ("game-system", "Game System"),
+    ("game-template", "Game Template"),
 ];
+
+/// The filter slug for the type label the owned-library endpoint reports.
+///
+/// Owned entries say `"3D"` or `"Tools & Plugins"`; search takes
+/// `3d-model` or `tool-and-plugin`. Mapping here keeps one filter serving the
+/// catalog and the purchases, and lets a card carry the slug either way.
+/// Labels with no slug (`Tutorials & Examples`, `Legacy`) come back as `None`.
+pub fn listing_slug_for_label(label: &str) -> Option<&'static str> {
+    let normalized = match label {
+        "3D" => "3d-model",
+        "Material & Textures" => "material",
+        "Tools & Plugins" => "tool-and-plugin",
+        "Animations" => "animation",
+        "Game Systems" => "game-system",
+        "Game Templates" => "game-template",
+        other => other,
+    };
+    LISTING_TYPES
+        .iter()
+        .find(|(slug, _)| *slug == normalized)
+        .map(|(slug, _)| *slug)
+}
 
 /// Human label for a listing-type slug.
 pub fn listing_label(slug: Option<&str>) -> String {
@@ -470,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn library_items_map_their_categories_and_images() {
+    fn library_items_map_their_type_seller_and_images() {
         use assetcraft_core::{AssetImage, Category};
 
         let item = LibraryItem {
@@ -481,9 +512,11 @@ mod tests {
             url: None,
             source: Some("fab".to_owned()),
             distribution_method: None,
+            listing_type: Some("3D".to_owned()),
+            seller: Some("Quixel Megascans".to_owned()),
             artifact_id: None,
             categories: vec![Category {
-                name: Some("3D Models".to_owned()),
+                name: Some("Rock".to_owned()),
                 ..Default::default()
             }],
             images: vec![AssetImage {
@@ -496,12 +529,33 @@ mod tests {
         let card = Card::from_library_item(&item);
         assert_eq!(card.id, "fab-1");
         assert_eq!(card.title, "Mossy Rock");
-        assert_eq!(card.listing_type.as_deref(), Some("3D Models"));
+        // The library labels 3D assets "3D"; the filter wants `3d-model`.
+        assert_eq!(card.listing_type.as_deref(), Some("3d-model"));
+        assert_eq!(card.seller.as_deref(), Some("Quixel Megascans"));
         assert_eq!(card.thumbnail.as_deref(), Some("http://example.test/1.png"));
         assert_eq!(card.description.as_deref(), Some("A mossy rock."));
-        assert_eq!(card.tags, vec!["3D Models".to_owned()]);
-        assert!(card.seller.is_none());
+        // Categories are genres, so they stay tags rather than becoming the type.
+        assert_eq!(card.tags, vec!["Rock".to_owned()]);
         assert!(!card.free);
+    }
+
+    #[test]
+    fn owned_labels_map_onto_the_filter_slugs() {
+        assert_eq!(listing_slug_for_label("3D"), Some("3d-model"));
+        assert_eq!(
+            listing_slug_for_label("Tools & Plugins"),
+            Some("tool-and-plugin")
+        );
+        assert_eq!(
+            listing_slug_for_label("Material & Textures"),
+            Some("material")
+        );
+        assert_eq!(listing_slug_for_label("Game Systems"), Some("game-system"));
+        // Already a slug: unchanged.
+        assert_eq!(listing_slug_for_label("vfx"), Some("vfx"));
+        // No search slug exists for these, so they stay untyped.
+        assert_eq!(listing_slug_for_label("Tutorials & Examples"), None);
+        assert_eq!(listing_slug_for_label("Legacy"), None);
     }
 
     #[test]

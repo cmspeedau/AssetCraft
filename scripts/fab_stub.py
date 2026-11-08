@@ -154,15 +154,25 @@ def owned_item(listing):
         "images": [{"url": f"{BASE}/img/{n}.png", "type": "thumbnail"}],
         # The live library names the deliverable build here; an entry
         # without an artifactId has no download route, exactly as live.
+        # Fab lists engine builds oldest first for many assets, so the stub
+        # does too: the client has to pick the newest, not the first.
         "projectVersions": [
             {
                 "artifactId": f"StubAsset{n}V1",
-                "engineVersions": ["UE_5.4"],
+                "engineVersions": ["UE_5.0"],
+                "targetPlatforms": ["Windows"],
+                "buildVersions": [
+                    {"buildVersion": "0.9", "platform": "Windows"}
+                ],
+            },
+            {
+                "artifactId": f"StubAsset{n}V2",
+                "engineVersions": ["UE_5.4", "UE_5.6"],
                 "targetPlatforms": ["Windows"],
                 "buildVersions": [
                     {"buildVersion": "1.0", "platform": "Windows"}
                 ],
-            }
+            },
         ],
     }
 

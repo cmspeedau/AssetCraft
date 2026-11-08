@@ -29,7 +29,7 @@ pub mod session;
 pub mod store;
 pub mod token;
 
-pub use epic::{EpicAuth, LAUNCHER_CLIENT_ID};
+pub use epic::{extract_authorization_code, EpicAuth, LAUNCHER_CLIENT_ID};
 pub use session::ensure_fresh_token;
 pub use store::{DefaultTokenStore, FileTokenStore, TokenStore, KEYRING_ACCOUNT, KEYRING_SERVICE};
 pub use token::EpicToken;

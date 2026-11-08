@@ -18,6 +18,7 @@ assetcraft-core.workspace = true
 assetcraft-dcc-blender.workspace = true
 assetcraft-library.workspace = true
 assetcraft-transfer.workspace = true
+assetcraft-update.workspace = true
 chrono.workspace = true
 eframe = "0.33"
 egui = "0.33"

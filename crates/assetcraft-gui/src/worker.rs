@@ -14,7 +14,8 @@ use assetcraft_core::{
     AssetDetail, AssetId, AssetSummary, Config, LibraryItem, Page, SearchQuery, Settings,
 };
 use assetcraft_library::{Library, MediaCache};
-use tokio::sync::{mpsc, Semaphore};
+use assetcraft_update::{Product, Update, UpdateClient};
+use tokio::sync::{mpsc, Mutex, Semaphore};
 
 /// How many thumbnail downloads may be in flight at once.
 const THUMBNAIL_CONCURRENCY: usize = 6;
@@ -91,6 +92,11 @@ pub enum Command {
         /// The asset to export; its files come from the library record.
         id: String,
     },
+    /// Ask the release feed whether a newer AssetCraft exists for this
+    /// machine. A failure answers nothing at all.
+    CheckUpdate,
+    /// Install the update the last check found: download, verify, swap.
+    DownloadUpdate,
 }
 
 /// Results the worker hands back.
@@ -139,6 +145,13 @@ pub enum Event {
         id: String,
         result: Box<Result<ExportSummary, String>>,
     },
+    /// A newer release exists, offered once; `url` is its release page.
+    UpdateAvailable { version: String, url: String },
+    /// An update was downloaded, verified, and swapped into place; the next
+    /// start of AssetCraft runs it.
+    UpdateStaged { version: String },
+    /// Installing an update failed; `error` is one readable line.
+    UpdateFailed(String),
     /// The worker could not be set up at all; the UI should fall back to demo
     /// data.
     Fatal(String),
@@ -235,6 +248,15 @@ async fn run(
     // Thumbnails the download flow already cached are reused, so local library
     // cards render without a network.
     let media = MediaCache::new(config.paths.thumbnail_cache_dir());
+
+    // Auto-update reads the release feed with its own client: it talks to
+    // GitHub, not Fab, and shares nothing with the catalog but the user
+    // agent. A build that cannot even build this client simply has no
+    // update path — that is never a reason to lose the catalog.
+    let updater = UpdateClient::from_config(&config).ok().map(Arc::new);
+    // The chosen update waits here between "available" and "install it", so
+    // the UI only ever carries the version string, never the asset details.
+    let pending_update: Arc<Mutex<Option<Update>>> = Arc::new(Mutex::new(None));
 
     // Tell the UI who is signed in, refreshing a token that is close to expiry.
     {
@@ -514,8 +536,68 @@ async fn run(
                     ctx.request_repaint();
                 });
             }
+            Command::CheckUpdate => {
+                let updater = updater.clone();
+                let pending = pending_update.clone();
+                let events = events.clone();
+                let ctx = ctx.clone();
+                tokio::spawn(async move {
+                    // A failed check answers nothing: a rate limit or an
+                    // offline start is not worth interrupting anyone over,
+                    // and the next start asks again.
+                    let Some(updater) = updater else { return };
+                    let Ok(Some(update)) = updater.check(Product::Gui).await else {
+                        return;
+                    };
+                    let (version, url) = (update.tag.clone(), update.url.clone());
+                    pending.lock().await.replace(update);
+                    let _ = events.send(Event::UpdateAvailable { version, url });
+                    ctx.request_repaint();
+                });
+            }
+            Command::DownloadUpdate => {
+                let updater = updater.clone();
+                let pending = pending_update.clone();
+                let events = events.clone();
+                let ctx = ctx.clone();
+                let updates_dir = config.paths.updates_dir();
+                tokio::spawn(async move {
+                    let event = match install(updater, pending, &updates_dir).await {
+                        Ok(version) => Event::UpdateStaged { version },
+                        Err(error) => Event::UpdateFailed(friendly(&error)),
+                    };
+                    let _ = events.send(event);
+                    ctx.request_repaint();
+                });
+            }
         }
     }
+}
+
+/// Download the pending update, verify it against its release digest, and
+/// swap it over the running executable. Returns the installed version's tag.
+async fn install(
+    updater: Option<Arc<UpdateClient>>,
+    pending: Arc<Mutex<Option<Update>>>,
+    updates_dir: &std::path::Path,
+) -> std::result::Result<String, String> {
+    let Some(updater) = updater else {
+        return Err("this build has no update feed configured".to_owned());
+    };
+    let Some(update) = pending.lock().await.take() else {
+        return Err("there is no update pending any more; check again".to_owned());
+    };
+    let version = update.tag.clone();
+    let staged = updater
+        .download(&update, updates_dir)
+        .await
+        .map_err(|error| error.to_string())?;
+    // The swap is a pair of renames beside the executable; the running
+    // process keeps its own image, so this is the last moment the update
+    // was optional and the first moment the next start is already decided.
+    assetcraft_update::apply(&staged).map_err(|error| error.to_string())?;
+    let _ = std::fs::remove_file(&staged);
+    Ok(version)
 }
 
 /// The account the token store already holds, refreshed when it is stale.

@@ -156,6 +156,17 @@ pub struct App {
     settings_open: bool,
     settings_dir: String,
     settings_quality: usize,
+    settings_auto_update: bool,
+    /// The release the feed announced for this machine, with its page: the
+    /// banner offers it until it is dismissed or installed.
+    update_available: Option<(String, String)>,
+    /// An update that was downloaded, verified, and swapped in, waiting for
+    /// the restart that runs it.
+    update_staged: Option<String>,
+    /// An update download is in flight; the banner reads as busy.
+    update_busy: bool,
+    /// Why the last update attempt failed, until it is done or dismissed.
+    update_error: Option<String>,
     collections: Vec<Collection>,
     /// The open collection in the Collections view; `None` is the list.
     active_collection: Option<i64>,
@@ -212,6 +223,11 @@ impl Default for App {
             settings_open: false,
             settings_dir: String::new(),
             settings_quality: 0,
+            settings_auto_update: true,
+            update_available: None,
+            update_staged: None,
+            update_busy: false,
+            update_error: None,
             collections: Vec::new(),
             active_collection: None,
             collection_new: String::new(),
@@ -239,6 +255,9 @@ impl App {
                 }
                 if let Ok(base) = std::env::var("ASSETCRAFT_EPIC_ID_BASE_URL") {
                     config.epic_id_base_url = base;
+                }
+                if let Ok(feed) = std::env::var("ASSETCRAFT_UPDATE_FEED") {
+                    config.update_feed_url = feed;
                 }
                 app.sign_in_url = assetcraft_auth::EpicAuth::from_config(&config)
                     .map(|auth| auth.authorization_url())
@@ -272,6 +291,13 @@ impl App {
                 if app.worker.is_none() {
                     app.source = Source::Demo;
                     app.error = Some("The catalog worker could not start.".to_owned());
+                } else if app.settings.auto_update.unwrap_or(true) {
+                    // The promise the README's feature list makes: ask the
+                    // feed once, in the background, and say something only
+                    // if a verifiable newer release is out there.
+                    if let Some(worker) = &app.worker {
+                        worker.send(Command::CheckUpdate);
+                    }
                 }
             }
             Err(error) => {
@@ -610,6 +636,25 @@ impl App {
                             self.export_note = Some((false, format!("The export failed: {error}")));
                         }
                     }
+                }
+                Event::UpdateAvailable { version, url } => {
+                    // Shown once and kept until the user answers it; a check
+                    // that finds the same version again changes nothing.
+                    self.update_error = None;
+                    if self.update_staged.is_none() {
+                        self.update_available = Some((version, url));
+                    }
+                    ctx.request_repaint();
+                }
+                Event::UpdateStaged { version } => {
+                    self.update_busy = false;
+                    self.update_available = None;
+                    self.update_error = None;
+                    self.update_staged = Some(version);
+                }
+                Event::UpdateFailed(error) => {
+                    self.update_busy = false;
+                    self.update_error = Some(error);
                 }
                 Event::Session(account) => {
                     self.account = account;
@@ -1136,6 +1181,7 @@ impl App {
                     .position(|choice| choice.eq_ignore_ascii_case(quality))
             })
             .unwrap_or(0);
+        self.settings_auto_update = self.settings.auto_update.unwrap_or(true);
         self.settings_error = None;
         self.settings_open = true;
     }
@@ -1155,6 +1201,7 @@ impl App {
                 let text = self.settings_dir.trim();
                 (!text.is_empty()).then(|| std::path::PathBuf::from(text))
             },
+            auto_update: Some(self.settings_auto_update),
         };
         match chosen.save(&config.paths) {
             Ok(()) => {
@@ -1330,6 +1377,89 @@ impl App {
             });
     }
 
+    /// The update banner: one line above the store, shown only while it has
+    /// something to say about the app's own updates. It offers a verified
+    /// release, follows its download, and asks for the one restart that runs
+    /// an installed one.
+    fn update_banner(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if self.update_busy {
+            ctx.request_repaint_after(std::time::Duration::from_millis(80));
+        }
+        ui.horizontal(|ui| {
+            if self.update_busy {
+                ui.spinner();
+                ui.label(
+                    egui::RichText::new("Downloading an update…")
+                        .size(12.0)
+                        .color(theme::FG),
+                );
+            } else if let Some(version) = self.update_staged.clone() {
+                ui.label(
+                    egui::RichText::new(format!("AssetCraft {version} is installed."))
+                        .size(12.0)
+                        .color(theme::FG),
+                );
+                let button = egui::Button::new(
+                    egui::RichText::new("Restart now")
+                        .strong()
+                        .color(egui::Color32::WHITE),
+                )
+                .fill(theme::GREEN);
+                if ui.add(button).clicked() {
+                    // The swap is done, so starting this path *is* starting
+                    // the new binary: spawn the next instance, close this
+                    // window, and the handover is complete.
+                    if let Ok(exe) = std::env::current_exe() {
+                        let _ = std::process::Command::new(exe).spawn();
+                    }
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                if ui.button("Later").clicked() {
+                    self.update_staged = None;
+                }
+            } else if let Some((version, url)) = self.update_available.clone() {
+                ui.label(
+                    egui::RichText::new(format!("AssetCraft {version} is available."))
+                        .size(12.0)
+                        .color(theme::FG),
+                );
+                let button = egui::Button::new(
+                    egui::RichText::new("Update")
+                        .strong()
+                        .color(egui::Color32::WHITE),
+                )
+                .fill(theme::GREEN);
+                if ui
+                    .add(button)
+                    .on_hover_text(
+                        "Downloads it, checks it against the release's own SHA-256 digest, \
+                         and puts it in place.\nNothing runs until you restart.",
+                    )
+                    .clicked()
+                {
+                    if let Some(worker) = &self.worker {
+                        worker.send(Command::DownloadUpdate);
+                    }
+                    self.update_busy = true;
+                }
+                ui.hyperlink_to("Release notes", &url);
+                if ui.button("Not now").clicked() {
+                    self.update_available = None;
+                }
+            }
+            if let Some(error) = self.update_error.clone() {
+                ui.label(
+                    egui::RichText::new(format!("The update failed: {error}"))
+                        .size(11.0)
+                        .color(theme::RED),
+                );
+                if ui.button("Dismiss").clicked() {
+                    self.update_error = None;
+                }
+            }
+        });
+    }
+
     /// Settings as a small modal: the two choices the README promises, and the
     /// standard paths shown read-only so a custom download root can be put
     /// back without hunting through this file.
@@ -1400,6 +1530,20 @@ impl App {
                 egui::RichText::new(
                     "The quality tier the download picker starts on. Assets without a \
                      file in the chosen tier report it instead of arriving in another one.",
+                )
+                .size(11.0)
+                .color(theme::FG_MUTED),
+            );
+
+            ui.add_space(8.0);
+            ui.checkbox(
+                &mut self.settings_auto_update,
+                egui::RichText::new("Check for updates at startup").size(12.0),
+            );
+            ui.label(
+                egui::RichText::new(
+                    "Asks the release feed once when AssetCraft opens. Nothing installs \
+                     on its own: an answer is a banner, and the banner needs your press.",
                 )
                 .size(11.0)
                 .color(theme::FG_MUTED),
@@ -2114,6 +2258,16 @@ impl eframe::App for App {
 
         if !self.jobs.is_empty() {
             egui::TopBottomPanel::bottom("downloads").show(ctx, |ui| self.downloads(ui));
+        }
+        // The update banner sits above everything in the window: it is the
+        // only surface that talks about the app itself rather than the
+        // library, and it appears only while it has something to say.
+        if self.update_available.is_some()
+            || self.update_staged.is_some()
+            || self.update_busy
+            || self.update_error.is_some()
+        {
+            egui::TopBottomPanel::top("update").show(ctx, |ui| self.update_banner(ui, ctx));
         }
         egui::TopBottomPanel::top("search").show(ctx, |ui| self.search_bar(ui));
         egui::TopBottomPanel::top("filters").show(ctx, |ui| self.filter_bar(ui, ctx));

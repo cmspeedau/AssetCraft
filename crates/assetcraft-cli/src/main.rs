@@ -17,6 +17,7 @@ use assetcraft_core::{
 use assetcraft_download::{BandwidthLimit, DownloadFile, DownloadOptions, Downloader, Manifest};
 use assetcraft_library::{Download, Library, MediaCache};
 use assetcraft_transfer::Phase;
+use assetcraft_update::{Product, UpdateClient};
 
 /// Browse and download Megascans / Fab assets.
 #[derive(Debug, Parser)]
@@ -48,6 +49,16 @@ enum Command {
     Export(ExportArgs),
     /// Inspect the catalog's taxonomy.
     Taxonomy(TaxonomyArgs),
+    /// Check for a newer AssetCraft release; --apply installs it.
+    Update(UpdateArgs),
+}
+
+#[derive(Debug, Args)]
+struct UpdateArgs {
+    /// Download the newest release for this machine, verify its checksum,
+    /// and install it over this executable.
+    #[arg(long)]
+    apply: bool,
 }
 
 #[derive(Debug, Args)]
@@ -391,6 +402,7 @@ async fn main() -> Result<()> {
         Command::Download(args) => download(&config, args).await,
         Command::Export(args) => export_asset(&config, args),
         Command::Taxonomy(args) => taxonomy(&config, args).await,
+        Command::Update(args) => update(&config, args).await,
     }
 }
 
@@ -1328,6 +1340,66 @@ fn print_library_items(items: &[LibraryItem], media: &MediaCache, library: &Libr
         }
         println!();
     }
+}
+
+/// Ask the release feed what it has for this build, and with `--apply`
+/// install the answer. The swap replaces this CLI's own executable beside
+/// itself; the desktop app ships in the same release and updates itself
+/// when it runs.
+async fn update(config: &Config, args: UpdateArgs) -> Result<()> {
+    // The feed mirror is read here, at the point of use, like the chunk-base
+    // override in the download flow; the packaged default is the project's
+    // own GitHub Releases.
+    let mut config = config.clone();
+    if let Ok(feed) = std::env::var("ASSETCRAFT_UPDATE_FEED") {
+        config.update_feed_url = feed;
+    }
+    let client = UpdateClient::from_config(&config).context("could not build the update client")?;
+
+    let Some(target) = assetcraft_update::current_target() else {
+        println!(
+            "AssetCraft {} is running; this platform is not among the published release \
+             targets, so there is nothing to update to.",
+            assetcraft_core::VERSION
+        );
+        return Ok(());
+    };
+
+    match client
+        .check(Product::Cli)
+        .await
+        .context("could not read the update feed")?
+    {
+        Some(update) => {
+            println!(
+                "AssetCraft {} is running; {} is available ({})",
+                assetcraft_core::VERSION,
+                update.version,
+                update.url
+            );
+            if !args.apply {
+                println!("Re-run with --apply to download, verify, and install it.");
+                return Ok(());
+            }
+            let staged = client
+                .download(&update, &config.paths.updates_dir())
+                .await
+                .context("the update download did not verify")?;
+            assetcraft_update::apply(&staged)
+                .context("the update was verified but could not be installed")?;
+            let _ = std::fs::remove_file(&staged);
+            println!(
+                "Installed {} over {}; the next start of this binary is the new one.",
+                update.version,
+                std::env::current_exe()?.display()
+            );
+        }
+        None => println!(
+            "AssetCraft {} is the newest release for this machine ({target}).",
+            assetcraft_core::VERSION
+        ),
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -170,6 +170,33 @@ impl Library {
         Ok(changed > 0)
     }
 
+    /// Replace a stored item with a fresher copy, reporting whether it changed.
+    ///
+    /// A re-sync carries metadata Fab has since corrected: a title, the
+    /// listing type, the artifact of the build it now delivers. Nothing the
+    /// user chose lives in this row — a download's path is its own table, and
+    /// favourites and collections key on the asset id — so refreshing it can
+    /// undo no local decision. It updates the one row and adds nothing: an
+    /// asset the library does not hold is [`Library::insert`]'s to add.
+    ///
+    /// Row-level churn is Fab's, not a bug here: the library hands out fresh
+    /// `image_previews` URLs on many assets with every request, so a sync of a
+    /// few hundred assets rewrites a large share of them even when nothing else
+    /// moved. The URL that works now beats the one that worked at the last
+    /// sync, so this is the row being current rather than being touched.
+    pub fn refresh(&self, item: &LibraryItem) -> Result<bool> {
+        let json = serde_json::to_string(item)?;
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE assets SET title = ?2, item = ?3
+                 WHERE id = ?1 AND item IS NOT ?3",
+                rusqlite::params![item.asset_id, item.title, json],
+            )
+            .map_err(database)?;
+        Ok(changed > 0)
+    }
+
     /// Look up an asset by id.
     pub fn get(&self, id: &AssetId) -> Result<Option<LibraryItem>> {
         let mut rows = self.items(
@@ -665,6 +692,42 @@ mod tests {
             library.get(&AssetId::new("a")).unwrap().unwrap().title,
             "Rocks"
         );
+    }
+
+    #[test]
+    fn a_resync_refreshes_the_stored_item_but_not_the_download() {
+        let library = library();
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = item("a", "Hornbeam");
+        first.artifact_id = Some("MS_Hornbeam_UE4".to_owned());
+        library.insert(&first).unwrap();
+        library
+            .record_download(&AssetId::new("a"), dir.path(), "ue")
+            .unwrap();
+
+        // Fab's newer sync says the deliverable build is a different one.
+        let mut fresher = item("a", "European Hornbeam");
+        fresher.artifact_id = Some("MS_Hornbeam_UE51_V2".to_owned());
+        assert!(library.refresh(&fresher).unwrap());
+
+        let stored = library.get(&AssetId::new("a")).unwrap().unwrap();
+        assert_eq!(stored.title, "European Hornbeam");
+        assert_eq!(
+            stored.artifact_id.as_deref(),
+            Some("MS_Hornbeam_UE51_V2"),
+            "the re-sync's artifact wins over the one first stored"
+        );
+        // Where the user's files landed is theirs, not Fab's to overwrite.
+        let download = library.download(&AssetId::new("a")).unwrap().unwrap();
+        assert_eq!(download.path, dir.path().to_path_buf());
+        assert_eq!(download.format, "ue");
+
+        // Syncing the same data again changes nothing.
+        assert!(!library.refresh(&fresher).unwrap());
+        // A resync never adds an asset the account no longer has.
+        let other = item("b", "New Only");
+        assert!(!library.refresh(&other).unwrap());
+        assert_eq!(library.len().unwrap(), 1);
     }
 
     #[test]

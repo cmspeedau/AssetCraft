@@ -1374,14 +1374,10 @@ fn print_library_items(items: &[LibraryItem], media: &MediaCache, library: &Libr
 /// itself; the desktop app ships in the same release and updates itself
 /// when it runs.
 async fn update(config: &Config, args: UpdateArgs) -> Result<()> {
-    // The feed mirror is read here, at the point of use, like the chunk-base
-    // override in the download flow; the packaged default is the project's
-    // own GitHub Releases.
-    let mut config = config.clone();
-    if let Ok(feed) = std::env::var("ASSETCRAFT_UPDATE_FEED") {
-        config.update_feed_url = feed;
-    }
-    let client = UpdateClient::from_config(&config).context("could not build the update client")?;
+    // The `ASSETCRAFT_UPDATE_FEED` mirror is already applied by `Config::load`,
+    // beside the base-URL overrides it has always honoured; the packaged
+    // default is the project's own GitHub Releases.
+    let client = UpdateClient::from_config(config).context("could not build the update client")?;
 
     let Some(target) = assetcraft_update::current_target() else {
         println!(

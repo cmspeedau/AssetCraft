@@ -153,6 +153,7 @@ impl Config {
             fab_base_url: env_override("ASSETCRAFT_FAB_BASE_URL", DEFAULT_FAB_BASE_URL),
             account_base_url: env_override("ASSETCRAFT_ACCOUNT_BASE_URL", DEFAULT_ACCOUNT_BASE_URL),
             epic_id_base_url: env_override("ASSETCRAFT_EPIC_ID_BASE_URL", DEFAULT_EPIC_ID_BASE_URL),
+            update_feed_url: env_override("ASSETCRAFT_UPDATE_FEED", DEFAULT_UPDATE_FEED_URL),
             user_agent: DEFAULT_USER_AGENT.to_string(),
             paths: Paths {
                 config_dir: dirs.config_dir().to_path_buf(),

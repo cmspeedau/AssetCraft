@@ -39,6 +39,7 @@ endorsed by, or supported by Epic Games, Quixel, or Fab.
 - [Features](#features)
 - [Architecture](#architecture)
 - [Installation](#installation)
+- [Onboarding](#onboarding)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [Supported DCCs](#supported-dccs)
@@ -186,6 +187,61 @@ git clone https://github.com/cmspeedau/AssetCraft.git assetcraft
 cd assetcraft
 cargo install --path crates/assetcraft-cli
 ```
+
+---
+
+## Onboarding
+
+The desktop app takes you from an empty window to an asset in your DCC without a
+terminal. Here is the whole path, end to end.
+
+### 1. Open the app: an empty store until you sign in
+
+AssetCraft opens on a signed-out window. Nothing is fetched and the marketplace
+views stay empty until you sign in — the same clean first run as Quixel Bridge.
+The Local and Collections views work regardless: they only ever read what is
+already on your disk, and the offline demo catalog is one toggle away in the
+sidebar if you just want to see the shell move.
+
+![The signed-out first window](docs/screenshots/signed-out.png)
+
+### 2. Sign in with your Epic launcher session
+
+AssetCraft signs in through Epic's launcher credentials, the same flow the CLI's
+`assetcraft login` uses: open Epic's login page, sign in there, then paste the
+authorization code (or the whole JSON page Epic lands on) back into the dialog.
+The token goes into your OS keyring and stays on your machine — AssetCraft never
+sees your password, and it can only reach assets your account already owns.
+
+![The sign-in dialog](docs/screenshots/sign-in.png)
+
+### 3. Browse your Purchased library
+
+Signed in, **Purchased** lists the Fab library your account owns — paging through
+it in the background, thumbnails and all. This is where downloads start: Fab only
+delivers the artifact of an asset you own, so the download action lives here
+rather than on a search-result card. (A catalog card the account does own offers
+an "Open in Purchased" jump to the same asset.) Local counts what is on disk, so
+it reads `0` until you have downloaded something — the sync that fills the
+background index is not the same as files you hold.
+
+![The Purchased library](docs/screenshots/purchased-library.png)
+
+### 4. Download, then export to Blender
+
+Select a card and its detail panel opens with an enabled **Download** button.
+AssetCraft resolves the newest engine build Fab will deliver, fetches and
+reassembles its chunks, verifies every file, and records where it landed. Once
+the files are on disk the same panel offers **Export to Blender** — it lays out
+the PBR maps and writes the import script from the recorded files, with the
+network off, and hands it to Blender. That is the full DoD path: install, sign
+in, download, export, terminal closed.
+
+![Download from the Purchased detail panel](docs/screenshots/purchased-download.png)
+
+> The app is in-tree but not yet packaged — see [Installation](#installation) for
+> building from source, and [ROADMAP.md](ROADMAP.md) for installers and
+> auto-update.
 
 ---
 

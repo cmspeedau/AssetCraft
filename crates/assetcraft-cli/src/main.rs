@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use assetcraft_auth::{ensure_fresh_token, DefaultTokenStore, EpicAuth, TokenStore};
+use assetcraft_auth::{
+    ensure_fresh_token, extract_authorization_code, DefaultTokenStore, EpicAuth, TokenStore,
+};
 use assetcraft_catalog::{FabClient, ResponseCache, DEFAULT_TTL};
 use assetcraft_core::{
     AssetFormat, AssetId, AssetStructure, AssetSummary, Config, LibraryItem, Page, Paths,
@@ -440,18 +442,29 @@ async fn login(config: &Config, args: LoginArgs) -> Result<()> {
     let auth = EpicAuth::from_config(config)?;
     let store = DefaultTokenStore::from_config(config);
 
-    let Some(code) = args.code else {
+    let Some(pasted) = args.code else {
         println!("Sign in to Epic Games to let AssetCraft reach your Fab library.\n");
         println!("1. Open this URL in a browser and sign in:");
         println!();
         println!("     {}", auth.authorization_url());
         println!();
-        println!("2. The page shows a JSON object; copy the value of \"code\".");
-        println!("3. Return here and run:");
+        println!("2. Signing in lands the browser on a small JSON page. The code is");
+        println!("   the value of \"authorizationCode\"; if every field is null, the");
+        println!("   sign-in did not finish - open the URL again after signing in.");
+        println!("3. Return here and run (the whole JSON page pastes fine too):");
         println!();
         println!("     assetcraft login --code <CODE>");
         return Ok(());
     };
+
+    // The paste may be the bare code, a redirect URL, or the whole JSON page.
+    let code = extract_authorization_code(&pasted);
+    if code.is_empty() {
+        return Err(anyhow::anyhow!(
+            "that paste holds no authorization code. Sign in to epicgames.com in \
+             the browser first, open the URL again, and paste the page it shows."
+        ));
+    }
 
     let token = auth.exchange_code(&code).await.context("sign-in failed")?;
     store.save(&token).context("could not store the token")?;

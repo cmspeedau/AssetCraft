@@ -2110,8 +2110,10 @@ impl eframe::App for App {
             self.start_search(ctx);
         }
 
-        let hits = self.hits();
-
+        // Hits are indexes into `cards`, and every panel below can replace
+        // that list — the nav switches views, the filter bar resets a search,
+        // the detail panel can send a card to Purchased. They are therefore
+        // resolved in the grid panel, last, against the list it will draw.
         if !self.jobs.is_empty() {
             egui::TopBottomPanel::bottom("downloads").show(ctx, |ui| self.downloads(ui));
         }
@@ -2268,6 +2270,7 @@ impl eframe::App for App {
                     return;
                 }
 
+                let hits = self.hits();
                 if hits.is_empty() {
                     let text = match self.view {
                         View::Local => "Nothing downloaded yet. Assets you acquire land here.",

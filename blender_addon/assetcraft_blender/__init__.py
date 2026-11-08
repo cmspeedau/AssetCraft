@@ -29,7 +29,7 @@ from . import exports
 bl_info = {
     "name": "AssetCraft",
     "author": "AssetCraft contributors",
-    "version": (0, 1, 0),
+    "version": (1, 0, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > AssetCraft",
     "description": "Import AssetCraft exports with one click",

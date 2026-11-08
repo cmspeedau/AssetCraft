@@ -307,7 +307,7 @@ dependencies = [
 
 [[package]]
 name = "assetcraft-auth"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "assetcraft-core",
  "chrono",
@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "assetcraft-catalog"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "assetcraft-core",
  "chrono",
@@ -338,7 +338,7 @@ dependencies = [
 
 [[package]]
 name = "assetcraft-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "assetcraft-auth",
@@ -360,7 +360,7 @@ dependencies = [
 
 [[package]]
 name = "assetcraft-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "directories",
  "reqwest",
@@ -373,7 +373,7 @@ dependencies = [
 
 [[package]]
 name = "assetcraft-dcc-blender"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "assetcraft-core",
  "serde",
@@ -383,7 +383,7 @@ dependencies = [
 
 [[package]]
 name = "assetcraft-download"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "assetcraft-core",
  "flate2",
@@ -400,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "assetcraft-gui"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "assetcraft-auth",
  "assetcraft-catalog",
@@ -420,7 +420,7 @@ dependencies = [
 
 [[package]]
 name = "assetcraft-library"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "assetcraft-core",
  "rusqlite",
@@ -430,7 +430,7 @@ dependencies = [
 
 [[package]]
 name = "assetcraft-transfer"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "assetcraft-catalog",
@@ -441,7 +441,7 @@ dependencies = [
 
 [[package]]
 name = "assetcraft-update"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "assetcraft-core",
  "httpmock",

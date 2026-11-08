@@ -151,13 +151,16 @@ jobs:
         run: |
           set -euo pipefail
           v="${{ steps.version.outputs.version }}"
-          dotnet tool install --global wix
+          # WiX v5 on purpose: v7 added the Open Source Maintenance Fee EULA
+          # gate (WIX7015) that a CI job has no business accepting. v5 speaks
+          # the same v4-schema .wxs and takes -d "Name=Value" definitions.
+          dotnet tool install --global wix --version 5.0.2
           "$HOME/.dotnet/tools/wix" build packaging/windows/AssetCraft.wxs \
             -arch x64 -o "AssetCraft-${v}-windows-x86_64.msi" \
-            -dVersion="$v" \
-            -dCliExe=target/release/assetcraft.exe \
-            -dGuiExe=target/release/assetcraft-gui.exe \
-            -dIcon=packaging/windows/assetcraft.ico
+            -d "Version=$v" \
+            -d "CliExe=target/release/assetcraft.exe" \
+            -d "GuiExe=target/release/assetcraft-gui.exe" \
+            -d "Icon=packaging/windows/assetcraft.ico"
 
       - name: Downloadable artifacts (pull requests)
         if: github.event_name != 'push'
@@ -239,9 +242,10 @@ jobs:
             cp "AppIcon.iconset/icon_${s}x${s}.png" "AppIcon.iconset/icon_${d}x${d}@2x.png"
           done
           iconutil -c icns AppIcon.iconset -o "$app/Contents/Resources/AppIcon.icns"
-          codesign --force -s - "$app/Contents/MacOS/assetcraft-gui"
-          codesign --force -s - "$app/Contents/MacOS/assetcraft"
-          codesign --force -s - "$app"
+          # One deep ad-hoc sign from the bundle out: signing the two Mach-O
+          # slices separately left the CLI's lipo'd signature something the
+          # bundle validator refused ("not signed at all" in subcomponent).
+          codesign --force --deep -s - "$app"
           cp universal/assetcraft "stage/assetcraft"
           ln -s /Applications stage/Applications
           cat > stage/README.txt <<TXT

@@ -6,9 +6,9 @@ name: Release
 # zip, because the update swaps the binary itself. GitHub computes a SHA-256
 # digest for stored assets, and that digest is what a running copy verifies
 # a download against; an asset that is merely linked, not stored, arrives
-# without one and the updater then refuses it. Installers for humans are a
-# later box (ROADMAP M5); this workflow is deliberately only the updater's
-# raw feed.
+# without one and the updater then refuses it. The installers humans download
+# are built by package.yml off the same tag; this workflow stays deliberately
+# only the updater's raw feed.
 
 on:
   push:

@@ -1,0 +1,14 @@
+Package: assetcraft
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: @ARCH@
+Maintainer: AssetCraft contributors <noreply@assetcraft.invalid>
+Homepage: https://github.com/cmspeedau/AssetCraft
+Depends: libc6 (>= 2.39), libssl3, libgl1, libegl1, libglx0, libx11-6, libxcursor1, libxrandr2, libxi6, libsm6, libxkbcommon0, libwayland-client0, zlib1g, libbrotli1, libzstd1
+Description: Fab and Megascans asset browser and DCC exporter
+ AssetCraft signs you in with your Epic launcher session, browses the
+ Fab and Megascans catalogs, downloads what you own into a local
+ library you control, and exports assets into Blender with meshes,
+ PBR materials and textures attached. This package installs the
+ command line tool (assetcraft) and the desktop app (assetcraft-gui).

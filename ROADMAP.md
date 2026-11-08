@@ -252,8 +252,9 @@ Make it a product.
 - [x] Collections view and settings.
 - [x] Login and account status inside the app (Epic launcher flow, token shared
       with the CLI).
-- [ ] Installers/artifacts for Windows (`.msi`/`.zip`), macOS (`.dmg`), Linux
-      (`.AppImage`/`.deb`).
+- [x] Installers/artifacts for Windows (`.msi`/`.zip`), macOS (`.dmg`), Linux
+      (`.AppImage`/`.deb`) — built by `.github/workflows/package.yml` off the
+      same `v*` tag, attached to the same release as the updater's binaries.
 - [x] Auto-update: release feed check, SHA-256-verified download, in-place
       swap, restart prompt; `assetcraft update` on the CLI; a `v*` tag
       publishes the feed via `.github/workflows/release.yml`.
@@ -262,10 +263,9 @@ Make it a product.
 **DoD:** A non-developer can install AssetCraft, sign in, download an asset, and
 export it to Blender without touching a terminal.
 
-> **v1.0.0 shipped November 2026** on this milestone: `v*` tags publish the
-> raw-binary feed via `release.yml`, and that feed is the install path today.
-> The installer box above slipped to a v1.0.x packaging release rather than
-> hold the product version.
+> **v1.0.0 shipped November 2026** on this milestone: one `v*` tag feeds both
+> doors — `release.yml` publishes the raw-binary feed the auto-updater
+> swaps, and `package.yml` attaches the installers humans download.
 
 ### M6 — Godot Export → `v1.1.0`
 

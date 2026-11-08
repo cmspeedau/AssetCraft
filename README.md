@@ -164,22 +164,30 @@ Detailed diagrams and design notes — including the plugin contract behind
 
 ## Installation
 
-### Prebuilt binaries
+### Installers
 
 The [Releases](https://github.com/cmspeedau/AssetCraft/releases) page carries
-the current CLI and desktop app for each platform, as raw binaries — the same
-files the auto-updater swaps in-place:
+an installer for each platform, built from the same CI as everything else:
+
+| Platform | Artifact | What it gives you |
+| --- | --- | --- |
+| Windows (x86_64) | `AssetCraft-<version>-windows-x86_64.msi`, or a portable `.zip` | both binaries in one folder; the MSI adds a Start-menu entry |
+| macOS (universal) | `AssetCraft-<version>-universal.dmg` | AssetCraft.app (Apple Silicon + Intel) plus the `assetcraft` command |
+| Linux (x86_64) | `assetcraft_<version>_amd64.deb` or `AssetCraft-<version>-x86_64.AppImage` | both binaries, a menu entry, and an icon |
+
+Whichever way you install, the app keeps itself current against the same
+Releases page — in the GUI, or with `assetcraft update` on the CLI.
+
+### Raw binaries
+
+The release also carries the plain binaries — the same files the
+auto-updater swaps in-place — for a `PATH` folder or a headless box:
 
 | Platform | Binaries |
 | --- | --- |
 | Windows | `assetcraft.exe`, `assetcraft-gui.exe` (x86_64) |
 | macOS | Apple Silicon and Intel builds of both |
 | Linux | x86_64 builds of both |
-
-Put one folder on your `PATH` and you have the product; `assetcraft update`
-keeps both current. Packaged installers (`.msi`/`.zip`, `.dmg`,
-`.AppImage`/`.deb`) are the remaining packaging box on the roadmap and will
-wrap these same binaries when they land.
 
 The Blender addon is built from the repository for now
 (`python3 blender_addon/package.py`, then *Install* it in Blender —

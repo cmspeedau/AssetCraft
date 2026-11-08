@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=AssetCraft
+GenericName=Asset browser
+Comment=Browse Fab and Megascans, download your assets, export to Blender
+Exec=assetcraft-gui
+Icon=assetcraft-gui
+Terminal=false
+Categories=Utility;FileManager;Development;
+Keywords=3D;assets;fab;megascans;epic;blender;

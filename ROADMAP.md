@@ -262,6 +262,11 @@ Make it a product.
 **DoD:** A non-developer can install AssetCraft, sign in, download an asset, and
 export it to Blender without touching a terminal.
 
+> **v1.0.0 shipped November 2026** on this milestone: `v*` tags publish the
+> raw-binary feed via `release.yml`, and that feed is the install path today.
+> The installer box above slipped to a v1.0.x packaging release rather than
+> hold the product version.
+
 ### M6 — Godot Export → `v1.1.0`
 
 The second DCC, and the first that shows the shared export trait earns its keep.

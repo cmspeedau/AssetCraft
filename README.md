@@ -164,19 +164,26 @@ Detailed diagrams and design notes — including the plugin contract behind
 
 ## Installation
 
-> Not available yet — no release has been published. This section documents the
-> intended install paths.
-
 ### Prebuilt binaries
 
-Once `v0.1` ships, grab an installer for your platform from the
-[Releases](https://github.com/cmspeedau/AssetCraft/releases) page:
+The [Releases](https://github.com/cmspeedau/AssetCraft/releases) page carries
+the current CLI and desktop app for each platform, as raw binaries — the same
+files the auto-updater swaps in-place:
 
-| Platform | Artifact |
+| Platform | Binaries |
 | --- | --- |
-| Windows | `.msi` / portable `.zip` |
-| macOS | `.dmg` (universal) |
-| Linux | `.AppImage` / `.deb` |
+| Windows | `assetcraft.exe`, `assetcraft-gui.exe` (x86_64) |
+| macOS | Apple Silicon and Intel builds of both |
+| Linux | x86_64 builds of both |
+
+Put one folder on your `PATH` and you have the product; `assetcraft update`
+keeps both current. Packaged installers (`.msi`/`.zip`, `.dmg`,
+`.AppImage`/`.deb`) are the remaining packaging box on the roadmap and will
+wrap these same binaries when they land.
+
+The Blender addon is built from the repository for now
+(`python3 blender_addon/package.py`, then *Install* it in Blender —
+see [blender_addon/README.md](blender_addon/README.md)).
 
 ### From source
 

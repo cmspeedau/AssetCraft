@@ -2641,8 +2641,8 @@ fn strip_tags(html: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{local_cards, short_date, strip_tags, Source, View};
-    use assetcraft_core::LibraryItem;
+    use super::{collection_cards, local_cards, short_date, strip_tags, Source, View};
+    use assetcraft_core::{AssetId, LibraryItem};
     use assetcraft_library::Library;
 
     #[test]

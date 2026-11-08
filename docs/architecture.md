@@ -415,6 +415,13 @@ later `assetcraft library` sync (which is `INSERT OR IGNORE`) never overwrites
 where a download landed, and a download can be tracked even before the item's
 metadata has been synced.
 
+The GUI's Local view reads membership from this table, not the index: a sync of
+a large account lists hundreds of owned assets whose files were never fetched,
+and "Local" that promises those is a view full of dead cards. What counts as
+local is a `downloads` row whose path still exists — the same test the CLI
+labels `[exportable]`. Collections draw on the index instead: they organise
+what the account owns, downloaded or not.
+
 ### The app downloads from Purchased, not from the catalog (implemented, M5)
 
 ```

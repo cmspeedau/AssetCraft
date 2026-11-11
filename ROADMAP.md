@@ -303,10 +303,11 @@ them in Godot's terms.
 - [x] An installable in-editor Godot plugin (`editor_plugin`, GDScript) for
       one-click import from inside the editor (the generated script is the
       bridge; the plugin is a follow-on, as with the Blender addon).
-- [ ] GUI drives `export --dcc godot` from the recorded local source and the
+- [x] GUI drives `export --dcc godot` from the recorded local source and the
       Integrations panel describes and links the Godot editor plugin, meeting
       the same terminal-free bar as Blender (guiding principles;
-      `docs/architecture.md`).
+      `docs/architecture.md`). The GUI writes the export without launching Godot;
+      the editor plugin discovers it inside the user's project.
 
 **DoD:** `assetcraft export <asset-id> --dcc godot` produces a scene-ready,
 correctly-textured `StandardMaterial3D`/`ORMMaterial3D` in Godot.

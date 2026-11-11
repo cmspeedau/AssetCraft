@@ -13,7 +13,7 @@ use assetcraft_library::{Collection, Library};
 use assetcraft_transfer::Phase;
 
 use crate::data::{self, Card, Filters, View};
-use crate::worker::{Account, CatalogWorker, Command, Event};
+use crate::worker::{Account, CatalogWorker, Command, DccTarget, Event};
 use crate::{grid, icons, theme};
 
 /// Resolution choices for the download flow; the first entry means "no
@@ -31,7 +31,10 @@ const BLENDER_ADDON_EXPORTS: &str =
 /// How long the search box waits after the last keystroke before searching.
 const QUERY_DEBOUNCE: f64 = 0.3;
 /// Height reserved for the detail panel's action bar.
-const ACTION_BAR: f32 = 46.0;
+const ACTION_BAR: f32 = 76.0;
+/// Godot editor plugin installation and use guide.
+const GODOT_PLUGIN_GUIDE: &str =
+    "https://github.com/cmspeedau/AssetCraft/blob/master/godot_plugin/README.md";
 
 /// Where the catalog comes from.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -177,6 +180,8 @@ pub struct App {
     exporting: Option<String>,
     /// Where each asset was last exported to, for the detail panel's row.
     exported: HashMap<String, std::path::PathBuf>,
+    /// DCC chosen for the next export action.
+    export_target: DccTarget,
     /// The last export's one-line result, shown until dismissed.
     export_note: Option<(bool, String)>,
     owned_cards: Vec<Card>,
@@ -260,6 +265,7 @@ impl Default for App {
             library_error: None,
             exporting: None,
             exported: HashMap::new(),
+            export_target: DccTarget::Blender,
             export_note: None,
             owned_cards: Vec::new(),
             owned_cursor: None,
@@ -682,21 +688,31 @@ impl App {
                     }
                     match *result {
                         Ok(summary) => {
-                            let next = if summary.blender_found {
-                                "Open Blender and pick it in the AssetCraft sidebar."
-                            } else {
-                                "Blender was not found on this machine; the export is \
-                                 complete either way, and the addon brings it in once \
-                                 Blender is set up."
+                            let (target, next) = match (summary.dcc, summary.application_found) {
+                                (DccTarget::Blender, true) => (
+                                    "Blender",
+                                    "Open Blender and pick it in the AssetCraft sidebar.",
+                                ),
+                                (DccTarget::Blender, false) => (
+                                    "Blender",
+                                    "Blender was not found; the export is ready when it is installed.",
+                                ),
+                                (DccTarget::Godot, true) => (
+                                    "Godot",
+                                    "Open your Godot project and import it from the AssetCraft dock.",
+                                ),
+                                (DccTarget::Godot, false) => (
+                                    "Godot",
+                                    "Godot was not found; the export is ready when it is installed.",
+                                ),
                             };
                             self.export_note = Some((
                                 true,
                                 format!(
-                                    "Exported {} files as {} material(s) to {} - {}",
+                                    "Exported {} files for {target} as {} material(s) to {} - {next}",
                                     summary.copied,
                                     summary.materials,
                                     summary.dir.display(),
-                                    next
                                 ),
                             ));
                             self.exported.insert(id, summary.dir);
@@ -995,8 +1011,8 @@ impl App {
         }
     }
 
-    /// Lay a downloaded asset out for Blender. The worker reads the files the
-    /// library recorded and writes the export; nothing is fetched.
+    /// Lay a downloaded asset out for the chosen DCC. The worker reads the
+    /// library-recorded local source; nothing is fetched.
     pub fn start_export(&mut self, id: &str) {
         if self.exporting.is_some() {
             return;
@@ -1005,7 +1021,10 @@ impl App {
             self.export_note = Some((false, "The background worker is not running.".to_owned()));
             return;
         };
-        worker.send(Command::ExportBlender { id: id.to_owned() });
+        worker.send(Command::ExportDcc {
+            id: id.to_owned(),
+            dcc: self.export_target,
+        });
         self.exporting = Some(id.to_owned());
         self.export_note = None;
     }
@@ -1916,20 +1935,37 @@ impl App {
             }
             ui.add_space(10.0);
 
-            // ----- Coming next ------------------------------------------------
+            // ----- Godot ------------------------------------------------------
             ui.label(
-                egui::RichText::new("Coming next")
+                egui::RichText::new("Godot")
                     .size(13.0)
                     .strong()
                     .color(theme::FG),
             );
+            if let Some(binary) = assetcraft_dcc_godot::detect_find() {
+                ui.label(
+                    egui::RichText::new(format!("Detected: {}", binary.display()))
+                        .size(11.0)
+                        .color(theme::FG_SECONDARY),
+                );
+            } else {
+                ui.label(
+                    egui::RichText::new("Godot was not found; exports can still be prepared.")
+                        .size(11.0)
+                        .color(theme::FG_MUTED),
+                );
+            }
             ui.label(
                 egui::RichText::new(
-                    "Godot plugin: package from godot_plugin/ (see its README). \
-                     GUI export to Godot is next.",
+                    "Export a downloaded asset for Godot above, then enable the AssetCraft \
+                     editor plugin in your Godot project to browse and import it from the dock.",
                 )
                 .size(11.0)
                 .color(theme::FG_MUTED),
+            );
+            ui.hyperlink_to(
+                "Godot editor plugin: installation and usage guide",
+                GODOT_PLUGIN_GUIDE,
             );
 
             if let Some(error) = &self.integrations_error {
@@ -2259,7 +2295,10 @@ impl App {
                 });
             });
 
-            let list_height = (ui.available_height() - ACTION_BAR).max(140.0);
+            // The action row now holds a target picker and export button on
+            // separate lines; reserve both so the detail content can scroll
+            // without clipping the controls at shorter window heights.
+            let list_height = (ui.available_height() - ACTION_BAR).max(120.0);
             ui.allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), list_height),
                 egui::Layout::top_down(egui::Align::Min),
@@ -2478,31 +2517,65 @@ impl App {
 
                 if disk.is_some() {
                     let busy = self.exporting.as_deref() == Some(id.as_str());
-                    let button = egui::Button::new(
-                        egui::RichText::new(if busy {
-                            "Exporting..."
+                    let mut clicked = false;
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Export for")
+                                    .size(11.0)
+                                    .color(theme::FG_MUTED),
+                            );
+                            ui.add_enabled_ui(!busy, |ui| {
+                                egui::ComboBox::from_id_salt("export-target")
+                                    .selected_text(match self.export_target {
+                                        DccTarget::Blender => "Blender",
+                                        DccTarget::Godot => "Godot",
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut self.export_target,
+                                            DccTarget::Blender,
+                                            "Blender",
+                                        );
+                                        ui.selectable_value(
+                                            &mut self.export_target,
+                                            DccTarget::Godot,
+                                            "Godot",
+                                        );
+                                    });
+                            });
+                        });
+                        let target = match self.export_target {
+                            DccTarget::Blender => "Blender",
+                            DccTarget::Godot => "Godot",
+                        };
+                        let label = if busy {
+                            "Exporting...".to_owned()
                         } else {
-                            "Export to Blender"
-                        })
-                        .strong()
-                        .color(egui::Color32::WHITE),
-                    )
-                    .min_size(egui::vec2(148.0, 30.0))
-                    .fill(if busy {
-                        theme::BLUE.gamma_multiply(0.6)
-                    } else {
-                        theme::BLUE
+                            format!("Export to {target}")
+                        };
+                        let button = egui::Button::new(
+                            egui::RichText::new(label)
+                                .strong()
+                                .color(egui::Color32::WHITE),
+                        )
+                        .min_size(egui::vec2(148.0, 30.0))
+                        .fill(if busy {
+                            theme::BLUE.gamma_multiply(0.6)
+                        } else {
+                            theme::BLUE
+                        });
+                        let response = ui.add_enabled(!busy, button);
+                        clicked = response.clicked();
+                        if busy {
+                            response.on_disabled_hover_text("Writing the export...");
+                        } else {
+                            response.on_hover_text(format!(
+                                "Lay the downloaded files out for {target} and write the import files. \
+                                 The source is local; nothing is fetched."
+                            ));
+                        }
                     });
-                    let response = ui.add_enabled(!busy, button);
-                    let clicked = response.clicked();
-                    if busy {
-                        response.on_disabled_hover_text("Writing the export...");
-                    } else {
-                        response.on_hover_text(
-                            "Lay the downloaded files out for Blender and write the import \
-                             script. The files come from disk; nothing is fetched.",
-                        );
-                    }
                     if clicked {
                         self.start_export(&id);
                     }

@@ -13,6 +13,7 @@ use assetcraft_catalog::FabClient;
 use assetcraft_core::{
     AssetDetail, AssetId, AssetSummary, Config, LibraryItem, Page, SearchQuery, Settings,
 };
+use assetcraft_dcc_godot::{detect as godot_detect, ExportOptions as GodotExportOptions};
 use assetcraft_library::{Library, MediaCache};
 use assetcraft_update::{Product, Update, UpdateClient};
 use tokio::sync::{mpsc, Mutex, Semaphore};
@@ -40,9 +41,16 @@ pub struct ExportSummary {
     pub copied: usize,
     /// How many materials the generated script builds.
     pub materials: usize,
-    /// Whether Blender was found on this machine, which decides the wording of
-    /// the next step the UI suggests.
-    pub blender_found: bool,
+    /// Target DCC (currently Blender or Godot).
+    pub dcc: DccTarget,
+    /// Whether the target application was detected on this machine.
+    pub application_found: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DccTarget {
+    Blender,
+    Godot,
 }
 
 impl Account {
@@ -87,10 +95,11 @@ pub enum Command {
         /// between; the picker stays for the formats Fab serves at home.
         quality: Option<String>,
     },
-    /// Lay a downloaded asset out for Blender under the export root.
-    ExportBlender {
+    /// Lay a downloaded asset out for the selected DCC under the export root.
+    ExportDcc {
         /// The asset to export; its files come from the library record.
         id: String,
+        dcc: DccTarget,
     },
     /// Ask the release feed whether a newer AssetCraft exists for this
     /// machine. A failure answers nothing at all.
@@ -515,16 +524,16 @@ async fn run(
                     ctx.request_repaint();
                 });
             }
-            Command::ExportBlender { id } => {
+            Command::ExportDcc { id, dcc } => {
                 let events = events.clone();
                 let ctx = ctx.clone();
                 let config = config.clone();
                 tokio::spawn(async move {
-                    // Copying a download's files is blocking disk work; keep it
+                    // Export planning and copying is blocking disk work; keep it
                     // off the runtime's async workers.
                     let export_id = id.clone();
                     let result =
-                        tokio::task::spawn_blocking(move || run_export(&config, &export_id))
+                        tokio::task::spawn_blocking(move || run_export(&config, &export_id, dcc))
                             .await
                             .unwrap_or_else(|_| {
                                 Err("the export thread stopped before it finished.".to_owned())
@@ -613,15 +622,12 @@ async fn restore_session(auth: &EpicAuth, store: &impl TokenStore) -> Option<(Ac
     }
 }
 
-/// Lay one downloaded asset out for Blender under the export root, offline.
-///
-/// This is the same flow as the CLI's `export`: the files come from the path the
-/// library recorded, the layout lands under the standard export root where the
-/// Blender addon browses, and nothing here touches the network. Blender itself is
-/// never launched from the app: a background run could not touch the user's open
-/// scene, and an interactive one would block this thread until Blender quits —
-/// the addon is the in-editor path, and it only needs the written export.
-fn run_export(config: &Config, id: &str) -> Result<ExportSummary, String> {
+/// Lay one downloaded asset out for the selected DCC under the export root,
+/// offline. The library's recorded source path is authoritative; no catalog or
+/// download request is made. Neither DCC is launched, so an export never blocks
+/// on an interactive application and the editor plugins remain the in-editor
+/// path.
+fn run_export(config: &Config, id: &str, dcc: DccTarget) -> Result<ExportSummary, String> {
     let asset = AssetId::new(id);
     let download = Library::open(config.paths.library_file())
         .map_err(|error| error.to_string())?
@@ -649,24 +655,58 @@ fn run_export(config: &Config, id: &str) -> Result<ExportSummary, String> {
         download.format
     };
 
-    let plan = assetcraft_dcc_blender::plan(config.paths.exports_dir(), &asset, &format, &files);
-    let report = assetcraft_dcc_blender::export(
-        &plan,
-        &download.path,
-        &assetcraft_dcc_blender::ExportOptions {
-            // Same default as the CLI: bring the meshes in and assign the
-            // material, not just the material alone.
-            import_meshes: true,
-            ..Default::default()
-        },
-    )
-    .map_err(|error| error.to_string())?;
+    let (dir, copied, materials, application_found) = match dcc {
+        DccTarget::Blender => {
+            let plan =
+                assetcraft_dcc_blender::plan(config.paths.exports_dir(), &asset, &format, &files);
+            let report = assetcraft_dcc_blender::export(
+                &plan,
+                &download.path,
+                &assetcraft_dcc_blender::ExportOptions {
+                    // Match the CLI default: bring the meshes in and assign the
+                    // material, not just the material alone.
+                    import_meshes: true,
+                    ..Default::default()
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            (
+                report.dir,
+                report.copied,
+                report.materials,
+                assetcraft_dcc_blender::detect::find().is_some(),
+            )
+        }
+        DccTarget::Godot => {
+            let plan =
+                assetcraft_dcc_godot::plan(config.paths.exports_dir(), &asset, &format, &files);
+            let report = assetcraft_dcc_godot::export(
+                &plan,
+                &download.path,
+                &GodotExportOptions {
+                    import_meshes: true,
+                    // The editor plugin imports the generated project. Never
+                    // run Godot from the GUI worker.
+                    run: false,
+                    ..Default::default()
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            (
+                report.dir,
+                report.copied,
+                report.materials,
+                godot_detect::find().is_some(),
+            )
+        }
+    };
 
     Ok(ExportSummary {
-        dir: report.dir,
-        copied: report.copied,
-        materials: report.materials,
-        blender_found: assetcraft_dcc_blender::detect::find().is_some(),
+        dir,
+        copied,
+        materials,
+        dcc,
+        application_found,
     })
 }
 
@@ -748,7 +788,7 @@ fn decode(bytes: &[u8]) -> Option<egui::ColorImage> {
 
 #[cfg(test)]
 mod tests {
-    use super::{friendly, run_export, Account};
+    use super::{friendly, run_export, Account, DccTarget};
     use assetcraft_auth::EpicToken;
     use assetcraft_core::{AssetId, Config, LibraryItem};
     use assetcraft_library::Library;
@@ -823,9 +863,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = library_with_download(dir.path());
 
-        let summary = run_export(&config, "rock-1").unwrap();
+        let summary = run_export(&config, "rock-1", DccTarget::Blender).unwrap();
 
         assert_eq!(summary.copied, 2);
+        assert_eq!(summary.dcc, DccTarget::Blender);
         assert_eq!(
             summary.dir,
             config.paths.exports_dir().join("rock-1").join("gltf")
@@ -842,10 +883,30 @@ mod tests {
     }
 
     #[test]
+    fn exporting_a_downloaded_asset_for_godot_writes_plugin_contract_offline() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = library_with_download(dir.path());
+
+        let summary = run_export(&config, "rock-1", DccTarget::Godot).unwrap();
+
+        assert_eq!(summary.dcc, DccTarget::Godot);
+        assert_eq!(summary.copied, 2);
+        assert_eq!(summary.materials, 1);
+        assert_eq!(
+            summary.dir,
+            config.paths.exports_dir().join("rock-1").join("gltf")
+        );
+        assert!(summary.dir.join("assetcraft_export.gd").is_file());
+        assert!(summary.dir.join("assetcraft_export.tscn").is_file());
+        assert!(summary.dir.join("assetcraft_export.json").is_file());
+        assert!(summary.dir.join("project.godot").is_file());
+    }
+
+    #[test]
     fn exporting_what_was_never_downloaded_says_so() {
         let dir = tempfile::tempdir().unwrap();
         let config = Config::rooted_at(dir.path());
-        let error = run_export(&config, "absent").unwrap_err();
+        let error = run_export(&config, "absent", DccTarget::Godot).unwrap_err();
         assert!(error.contains("no downloaded files"), "{error}");
     }
 
@@ -854,7 +915,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = library_with_download(dir.path());
         std::fs::remove_dir_all(config.paths.asset_dir("rock-1")).unwrap();
-        let error = run_export(&config, "rock-1").unwrap_err();
+        let error = run_export(&config, "rock-1", DccTarget::Godot).unwrap_err();
         assert!(error.contains("gone from"), "{error}");
     }
 

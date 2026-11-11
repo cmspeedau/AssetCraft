@@ -600,8 +600,10 @@ carries the same constraint through associated plan, options, and report types.
 The second halves into the GUI rule: every adapter exposes exactly that
 programmatic API so the desktop app can drive plan → layout → script →
 editor, and `export --dcc <tool> --run` gives the terminal user the same
-path. A plugin that only works from a console, or only with a live
-connection to fetch its inputs, does not ship.
+path. The GUI runs the exporter against the recorded local source and writes
+an editor-readable export without launching the editor; the Godot editor plugin
+then discovers and imports it from inside the project. A plugin that only works
+from a console, or only with a live connection to fetch its inputs, does not ship.
 
 ### Texture-role and LOD reading lives in core
 

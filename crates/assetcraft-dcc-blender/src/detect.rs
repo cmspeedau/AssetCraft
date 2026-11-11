@@ -163,6 +163,101 @@ fn subdirectories(dir: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Parse a Blender version out of `blender --version` output.
+///
+/// Blender prints `Blender 4.2.0` (and more) on its first line; only the
+/// `major.minor` (or `major.minor.patch`) token is wanted, because that is
+/// what names the `scripts/addons` directory Blender reads.
+pub fn parse_version(output: &str) -> Option<String> {
+    output
+        .lines()
+        .next()?
+        .split_whitespace()
+        .nth(1)
+        .map(str::to_owned)
+}
+
+/// Whether an addons directory already contains the AssetCraft addon.
+pub fn is_installed(addons_dir: &Path) -> bool {
+    addons_dir
+        .join("assetcraft_blender")
+        .join("__init__.py")
+        .is_file()
+}
+
+/// Whether a detected Blender binary lives inside a Flatpak sandbox.
+pub fn is_flatpak(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    text.contains("flatpak") || text.contains("org.blender.Blender")
+}
+
+/// Where a given Blender version keeps its user addons.
+///
+/// `home` and `appdata` are passed in rather than read from the environment so
+/// the result can be tested on any machine; `flatpak` selects the sandboxed
+/// location a Flatpak Blender actually uses. Mirrors the Python side in
+/// `blender_addon/assetcraft_blender/exports.py::default_library_root`.
+pub fn addons_dir(
+    os: Os,
+    home: Option<&Path>,
+    appdata: Option<&Path>,
+    version: &str,
+    flatpak: bool,
+) -> PathBuf {
+    match os {
+        Os::Linux => {
+            if flatpak {
+                if let Some(home) = home {
+                    return home
+                        .join(".var/app/org.blender.Blender/config/blender")
+                        .join(version)
+                        .join("scripts/addons");
+                }
+            }
+            if let Some(home) = home {
+                home.join(".config/blender")
+                    .join(version)
+                    .join("scripts/addons")
+            } else {
+                PathBuf::from("blender")
+                    .join(version)
+                    .join("scripts/addons")
+            }
+        }
+        Os::MacOs => {
+            if let Some(home) = home {
+                home.join("Library/Application Support/Blender")
+                    .join(version)
+                    .join("scripts/addons")
+            } else {
+                PathBuf::from("Blender")
+                    .join(version)
+                    .join("scripts/addons")
+            }
+        }
+        Os::Windows => {
+            if let Some(appdata) = appdata {
+                appdata
+                    .join("Blender Foundation")
+                    .join("Blender")
+                    .join(version)
+                    .join("scripts")
+                    .join("addons")
+            } else if let Some(home) = home {
+                home.join("AppData/Roaming/Blender Foundation/Blender")
+                    .join(version)
+                    .join("scripts/addons")
+            } else {
+                PathBuf::from("Blender Foundation")
+                    .join("Blender")
+                    .join(version)
+                    .join("scripts/addons")
+            }
+        }
+        Os::Other => PathBuf::from(".").join(version).join("scripts/addons"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,7 +323,71 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_platform_has_no_candidates() {
-        assert!(static_candidates(Os::Other, None, None).is_empty());
+    fn parse_version_reads_the_first_token_after_blender() {
+        let output = "Blender 4.2.0\n\nother lines";
+        assert_eq!(parse_version(output).as_deref(), Some("4.2.0"));
+    }
+
+    #[test]
+    fn parse_version_returns_none_for_empty_output() {
+        assert!(parse_version("").is_none());
+        assert!(parse_version("blender").is_none());
+    }
+
+    #[test]
+    fn addons_dir_linux_host_uses_dot_config() {
+        let home = PathBuf::from("/home/u");
+        let dir = addons_dir(Os::Linux, Some(&home), None, "4.2.0", false);
+        assert_eq!(dir, home.join(".config/blender/4.2.0/scripts/addons"));
+    }
+
+    #[test]
+    fn addons_dir_linux_flatpak_uses_the_sandboxed_config() {
+        let home = PathBuf::from("/home/u");
+        let dir = addons_dir(Os::Linux, Some(&home), None, "5.2", true);
+        assert_eq!(
+            dir,
+            home.join(".var/app/org.blender.Blender/config/blender/5.2/scripts/addons")
+        );
+    }
+
+    #[test]
+    fn addons_dir_macos_uses_application_support() {
+        let home = PathBuf::from("/Users/u");
+        let dir = addons_dir(Os::MacOs, Some(&home), None, "4.2", false);
+        assert_eq!(
+            dir,
+            home.join("Library/Application Support/Blender/4.2/scripts/addons")
+        );
+    }
+
+    #[test]
+    fn addons_dir_windows_uses_appdata() {
+        let home = PathBuf::from("C:\\Users\\u");
+        let appdata = PathBuf::from("C:\\Users\\u\\AppData\\Roaming");
+        let dir = addons_dir(Os::Windows, Some(&home), Some(&appdata), "4.2", false);
+        assert_eq!(
+            dir,
+            appdata.join("Blender Foundation/Blender/4.2/scripts/addons")
+        );
+    }
+
+    #[test]
+    fn is_installed_checks_for_the_entry_point() {
+        let dir = std::env::temp_dir().join("ac-test-addons");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("assetcraft_blender")).unwrap();
+        assert!(!is_installed(&dir));
+        std::fs::write(dir.join("assetcraft_blender/__init__.py"), "").unwrap();
+        assert!(is_installed(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn is_flatpak_recognises_the_flatpak_binary() {
+        assert!(is_flatpak(Path::new(
+            "/var/lib/flatpak/exports/bin/org.blender.Blender"
+        )));
+        assert!(!is_flatpak(Path::new("/usr/bin/blender")));
     }
 }

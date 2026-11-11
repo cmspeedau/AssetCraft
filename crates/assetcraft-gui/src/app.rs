@@ -21,6 +21,13 @@ use crate::{grid, icons, theme};
 /// The settings dialog's default-quality uses the same list, so a stored
 /// quality and a picker position are the same thing.
 const QUALITY_CHOICES: [&str; 5] = ["No preference", "2K", "4K", "8K", "16K"];
+/// The Blender addon, embedded so installing it needs no network and no
+/// separate download. These are the same two files `blender_addon/package.py`
+/// zips, written straight into Blender's user addons directory.
+const BLENDER_ADDON_INIT: &str =
+    include_str!("../../../blender_addon/assetcraft_blender/__init__.py");
+const BLENDER_ADDON_EXPORTS: &str =
+    include_str!("../../../blender_addon/assetcraft_blender/exports.py");
 /// How long the search box waits after the last keystroke before searching.
 const QUERY_DEBOUNCE: f64 = 0.3;
 /// Height reserved for the detail panel's action bar.
@@ -31,6 +38,16 @@ const ACTION_BAR: f32 = 46.0;
 pub enum Source {
     Live,
     Demo,
+}
+
+/// What the Integrations modal knows about Blender on this machine.
+#[derive(Clone)]
+struct BlenderStatus {
+    binary: Option<std::path::PathBuf>,
+    version: Option<String>,
+    addons_dir: Option<std::path::PathBuf>,
+    installed: bool,
+    error: Option<String>,
 }
 
 /// Bridge's first-window rule: the marketplace views wait for a session.
@@ -178,6 +195,14 @@ pub struct App {
     settings_dir: String,
     settings_quality: usize,
     settings_auto_update: bool,
+    /// The Integrations modal is open.
+    integrations_open: bool,
+    /// Why the last integration action failed, if any.
+    integrations_error: Option<String>,
+    /// Whether a Blender install is currently running.
+    installing_blender: bool,
+    /// Cached detection of Blender on this machine.
+    blender_status: Option<BlenderStatus>,
     /// The release the feed announced for this machine, with its page: the
     /// banner offers it until it is dismissed or installed.
     update_available: Option<(String, String)>,
@@ -247,6 +272,10 @@ impl Default for App {
             settings_dir: String::new(),
             settings_quality: 0,
             settings_auto_update: true,
+            integrations_open: false,
+            integrations_error: None,
+            installing_blender: false,
+            blender_status: None,
             update_available: None,
             update_staged: None,
             update_busy: false,
@@ -1178,12 +1207,8 @@ impl App {
                 }
             });
             ui.horizontal(|ui| {
-                let live = self.source == Source::Live;
-                if selectable(ui, live, "Live", None).clicked() {
-                    self.switch_source(Source::Live, ctx);
-                }
-                if selectable(ui, !live, "Demo data", None).clicked() {
-                    self.switch_source(Source::Demo, ctx);
+                if selectable(ui, false, "Integrations", None).clicked() {
+                    self.open_integrations();
                 }
             });
             ui.label(
@@ -1656,6 +1681,270 @@ impl App {
         }
         if save {
             self.save_settings();
+        }
+    }
+
+    fn open_integrations(&mut self) {
+        self.integrations_error = None;
+        self.refresh_blender_status();
+        self.integrations_open = true;
+    }
+
+    fn refresh_blender_status(&mut self) {
+        let Some(binary) = assetcraft_dcc_blender::detect::find() else {
+            self.blender_status = Some(BlenderStatus {
+                binary: None,
+                version: None,
+                addons_dir: None,
+                installed: false,
+                error: Some("Blender was not found on this machine.".to_owned()),
+            });
+            return;
+        };
+        let flatpak = assetcraft_dcc_blender::detect::is_flatpak(&binary);
+        let output = std::process::Command::new(&binary)
+            .arg("--version")
+            .output();
+        let version = match output {
+            Ok(out) if out.status.success() => {
+                assetcraft_dcc_blender::detect::parse_version(&String::from_utf8_lossy(&out.stdout))
+            }
+            Ok(out) => {
+                self.blender_status = Some(BlenderStatus {
+                    binary: Some(binary.clone()),
+                    version: None,
+                    addons_dir: None,
+                    installed: false,
+                    error: Some(format!("Blender exited with {}.", out.status)),
+                });
+                return;
+            }
+            Err(error) => {
+                self.blender_status = Some(BlenderStatus {
+                    binary: Some(binary.clone()),
+                    version: None,
+                    addons_dir: None,
+                    installed: false,
+                    error: Some(format!("Could not run Blender: {error}.")),
+                });
+                return;
+            }
+        };
+        let Some(version) = version else {
+            self.blender_status = Some(BlenderStatus {
+                binary: Some(binary.clone()),
+                version: None,
+                addons_dir: None,
+                installed: false,
+                error: Some("Could not read Blender's version.".to_owned()),
+            });
+            return;
+        };
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let appdata = std::env::var_os("APPDATA").map(std::path::PathBuf::from);
+        let os = assetcraft_dcc_blender::detect::current_os();
+        let addons_dir = assetcraft_dcc_blender::detect::addons_dir(
+            os,
+            home.as_deref(),
+            appdata.as_deref(),
+            &version,
+            flatpak,
+        );
+        let installed = assetcraft_dcc_blender::detect::is_installed(&addons_dir);
+        self.blender_status = Some(BlenderStatus {
+            binary: Some(binary),
+            version: Some(version),
+            addons_dir: Some(addons_dir),
+            installed,
+            error: None,
+        });
+    }
+
+    fn install_blender_addon(&mut self) {
+        let status = self.blender_status.clone();
+        let Some(status) = status else {
+            self.integrations_error = Some("Blender status is unknown.".to_owned());
+            return;
+        };
+        let Some(addons_dir) = status.addons_dir else {
+            self.integrations_error = Some(
+                status
+                    .error
+                    .unwrap_or_else(|| "Blender is not available.".to_owned()),
+            );
+            return;
+        };
+        self.installing_blender = true;
+        let target = addons_dir.join("assetcraft_blender");
+        let write_result = (|| -> Result<(), String> {
+            std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+            std::fs::write(target.join("__init__.py"), BLENDER_ADDON_INIT)
+                .map_err(|e| e.to_string())?;
+            std::fs::write(target.join("exports.py"), BLENDER_ADDON_EXPORTS)
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        self.installing_blender = false;
+        match write_result {
+            Ok(()) => {
+                self.integrations_error = None;
+                self.refresh_blender_status();
+            }
+            Err(error) => {
+                self.integrations_error = Some(format!("Could not install the addon: {error}"));
+            }
+        }
+    }
+
+    fn reveal_path(&self, path: &std::path::Path) {
+        #[cfg(target_os = "linux")]
+        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open").arg(path).spawn();
+        #[cfg(target_os = "windows")]
+        let _ = std::process::Command::new("explorer").arg(path).spawn();
+    }
+
+    fn integrations_dialog(&mut self, ctx: &egui::Context) {
+        let mut close = false;
+        let modal = egui::Modal::new(egui::Id::new("integrations")).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.label(
+                egui::RichText::new("Integrations")
+                    .size(17.0)
+                    .strong()
+                    .color(theme::FG),
+            );
+            ui.label(
+                egui::RichText::new(
+                    "Plugins that connect AssetCraft to the tools you already use. \
+                     Each one is installed into that tool's own folder; nothing is \
+                     registered system-wide.",
+                )
+                .size(11.0)
+                .color(theme::FG_MUTED),
+            );
+            ui.add_space(10.0);
+
+            // ----- Blender ---------------------------------------------------
+            ui.label(
+                egui::RichText::new("Blender")
+                    .size(13.0)
+                    .strong()
+                    .color(theme::FG),
+            );
+            let status = self.blender_status.clone();
+            if let Some(status) = status {
+                if let Some(error) = &status.error {
+                    ui.label(egui::RichText::new(error).size(11.0).color(theme::RED));
+                } else {
+                    if let Some(binary) = &status.binary {
+                        ui.label(
+                            egui::RichText::new(format!("Blender: {}", binary.display()))
+                                .size(11.0)
+                                .color(theme::FG_SECONDARY),
+                        );
+                    }
+                    if let Some(version) = &status.version {
+                        ui.label(
+                            egui::RichText::new(format!("Version: {version}"))
+                                .size(11.0)
+                                .color(theme::FG_MUTED),
+                        );
+                    }
+                    if let Some(addons) = &status.addons_dir {
+                        let state_text = if status.installed {
+                            "Addon: installed"
+                        } else {
+                            "Addon: not installed"
+                        };
+                        let color = if status.installed {
+                            theme::GREEN
+                        } else {
+                            theme::FG_MUTED
+                        };
+                        ui.label(egui::RichText::new(state_text).size(11.0).color(color));
+                        ui.label(
+                            egui::RichText::new(format!("Addons folder: {}", addons.display()))
+                                .size(10.0)
+                                .monospace()
+                                .color(theme::FG_MUTED),
+                        );
+                    }
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let can_install = status.binary.is_some()
+                        && status.addons_dir.is_some()
+                        && !self.installing_blender;
+                    let label = if self.installing_blender {
+                        "Installing\u{2026}"
+                    } else if status.installed {
+                        "Reinstall addon"
+                    } else {
+                        "Install addon"
+                    };
+                    if ui
+                        .add_enabled(can_install, egui::Button::new(label))
+                        .clicked()
+                    {
+                        self.install_blender_addon();
+                    }
+                    if let Some(addons) = &status.addons_dir {
+                        if ui.button("Reveal addons folder").clicked() {
+                            self.reveal_path(addons);
+                        }
+                    }
+                    if ui.button("Refresh").clicked() {
+                        self.refresh_blender_status();
+                    }
+                });
+                if let Some(addons) = &status.addons_dir {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Exports land in {} and show up in Blender's AssetCraft tab (N).",
+                            self.config
+                                .as_ref()
+                                .map(|c| c.paths.exports_dir().display().to_string())
+                                .unwrap_or_default()
+                        ))
+                        .size(10.0)
+                        .color(theme::FG_MUTED),
+                    );
+                    let _ = addons;
+                }
+            }
+            ui.add_space(10.0);
+
+            // ----- Coming next ------------------------------------------------
+            ui.label(
+                egui::RichText::new("Coming next")
+                    .size(13.0)
+                    .strong()
+                    .color(theme::FG),
+            );
+            ui.label(
+                egui::RichText::new(
+                    "Godot and Misty Engine exporters will appear here as they are built.",
+                )
+                .size(11.0)
+                .color(theme::FG_MUTED),
+            );
+
+            if let Some(error) = &self.integrations_error {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(error).size(11.0).color(theme::RED));
+            }
+
+            ui.add_space(10.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if modal.should_close() || close {
+            self.integrations_open = false;
         }
     }
 
@@ -2416,6 +2705,9 @@ impl eframe::App for App {
         }
         if self.settings_open {
             self.settings_dialog(ctx);
+        }
+        if self.integrations_open {
+            self.integrations_dialog(ctx);
         }
 
         egui::CentralPanel::default()

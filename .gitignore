@@ -4,7 +4,9 @@
 
 # Addon build output and Python caches
 blender_addon/dist/
+godot_plugin/dist/
 __pycache__/
+*.pyc
 
 # Editor / OS noise
 .DS_Store

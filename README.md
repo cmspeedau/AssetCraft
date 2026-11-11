@@ -65,8 +65,8 @@ integration:
   download an asset, and export it into their DCC* — end to end, from the
   desktop app.
 
-That is the contract every DCC integration ships against — Blender today,
-Godot next, whatever else lands: `export` reads the files the library
+That is the contract every DCC integration ships against — Blender and Godot
+today, whatever else lands: `export` reads the files the library
 recorded, with the network off, and the desktop app drives sign-in, download,
 and export so the terminal stays closed. An integration that misses either
 half is not finished. See [ROADMAP.md](ROADMAP.md) for what works today and
@@ -108,7 +108,7 @@ what already works and what is still landing.
 ### Integrations
 
 - Standardized PBR folder layout (base color, normal, roughness, AO, etc.).
-- One-click export to DCC tools, starting with **Blender**.
+- One-click export to DCC tools, starting with **Blender** and **Godot**.
 - Re-export of anything already downloaded, with the network off — export
   reads the files the library recorded, never Fab.
 - A headless CLI for scripted and CI workflows.
@@ -145,6 +145,7 @@ headless CLI.
 | `assetcraft-transfer` | lib | Resolves an owned asset and brings it down: formats → signed download info → manifest → chunks → verified files. |
 | `assetcraft-library` | lib | Local SQLite library index, thumbnails, dedup, offline browse. |
 | `assetcraft-dcc-blender` | adapter | Blender exporter and Python addon bridge. |
+| `assetcraft-dcc-godot` | adapter | Godot exporter and GDScript plugin bridge. |
 | `assetcraft-update` | lib | Auto-update: release feed, checksum-verified download, in-place binary swap. |
 | `assetcraft-cli` | bin | Headless binary for scripted / CI workflows. |
 | `assetcraft-gui` | bin | egui desktop app: browse, search, filter, download, and browse the local library. |
@@ -193,9 +194,11 @@ auto-updater swaps in-place — for a `PATH` folder or a headless box:
 | macOS | Apple Silicon and Intel builds of both |
 | Linux | x86_64 builds of both |
 
-The Blender addon is built from the repository for now
-(`python3 blender_addon/package.py`, then *Install* it in Blender —
-see [blender_addon/README.md](blender_addon/README.md)).
+The Blender addon and the Godot plugin are built from the repository for now
+(`python3 blender_addon/package.py`, then *Install* it in Blender; see
+[blender_addon/README.md](blender_addon/README.md) — and
+`python3 godot_plugin/package.py` for Godot, see
+[godot_plugin/README.md](godot_plugin/README.md)).
 
 ### From source
 
@@ -327,6 +330,12 @@ assetcraft export <asset-id> --source ./Downloads --format fbx --run
 # from the viewport sidebar (N). The addon runs the export's own script.
 python3 blender_addon/package.py    # -> blender_addon/dist/assetcraft_blender.zip
 
+# Godot: same layout, re-expressed as GDScript + a .tscn scene, with the
+# occlusion/roughness/metallic maps packed into one ORM texture and glTF
+# preferred when the asset has it. --run imports project files then runs the scene.
+assetcraft export <asset-id> --dcc godot --target ./MyGame
+python3 godot_plugin/package.py     # -> godot_plugin/dist/assetcraft_godot.zip
+
 # Fetch a single file, resuming and verifying as it goes
 assetcraft fetch https://example.com/asset.zip --output asset.zip --sha256 <hash>
 
@@ -383,7 +392,7 @@ and `--quality` still outrank them.
 | --- | --- |
 | Blender | CLI export works (`assetcraft export`): standard PBR layout + generated import script + machine-readable manifest. In-editor addon (`blender_addon/`) for one-click import from the viewport sidebar. The desktop app's local library drives the same export: one **Export to Blender** button, and the addon browses the app's export folder by default. Any packaging works — Flatpak (`org.blender.Blender`) and Snap included: detection finds the Flatpak export wrapper, and the addon resolves the app's export folder through the sandbox. |
 | Plain folder export | Available (the layout `export` writes) |
-| Godot | Planned — next DCC (roadmap M6): glTF meshes, `StandardMaterial3D`/`ORMMaterial3D` from a packed ORM texture, generated GDScript/`.tscn`. |
+| Godot | CLI export works (`assetcraft export --dcc godot`): the same PBR layout, a generated GDScript that builds `StandardMaterial3D`/`ORMMaterial3D` materials (AO/roughness/metallic packed into one ORM texture), and a `.tscn` scene that opens in Godot 4. glTF is preferred when the asset has it. In-editor plugin (`godot_plugin/`) for one-click import from a dock. Detection finds Godot on Linux (package, Snap, Flatpak), macOS, and Windows, and `--run` imports project files then runs the scene headlessly. |
 | Misty Engine | Planned (roadmap M7): glTF/OBJ meshes, Standard-shader material and prefab written into the project's `Assets/` tree with GUID-stable `.meta` sidecars. |
 | Unreal Engine | Under consideration |
 | Maya | Under consideration |
@@ -438,9 +447,11 @@ assetcraft/
 │   ├── assetcraft-transfer/    # resolve + download + assemble one asset
 │   ├── assetcraft-library/     # local library index
 │   ├── assetcraft-dcc-blender/ # Blender exporter
+│   ├── assetcraft-dcc-godot/   # Godot exporter
 │   ├── assetcraft-cli/         # headless binary
 │   └── assetcraft-gui/         # egui desktop app
 ├── blender_addon/          # in-Blender addon (Python) and its tests
+├── godot_plugin/           # in-Godot editor plugin (GDScript) and its tests
 ├── docs/                   # architecture and design notes
 ├── ROADMAP.md
 └── README.md

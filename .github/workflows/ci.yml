@@ -60,3 +60,74 @@ jobs:
         env:
           ASSETCRAFT_ADDON_FIXTURE: ${{ runner.temp }}/addon-fixture
         run: python3 -m unittest discover -s blender_addon/tests -v
+
+  godot:
+    name: Godot plugin
+    runs-on: ubuntu-latest
+    env:
+      # Pinned: the plugin targets Godot 4's material API, and a future 5.0
+      # must be a deliberate change rather than whatever the runner fetched.
+      GODOT_VERSION: 4.4.1-stable
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      # The exporter writes what the plugin's GDScript tests read: a real
+      # export tree, not a hand-written manifest, so a renamed key fails here.
+      - name: Build an export with the Rust exporter
+        env:
+          ASSETCRAFT_GODOT_FIXTURE: ${{ runner.temp }}/godot-fixture
+        run: cargo test -p assetcraft-dcc-godot --test plugin_fixture
+
+      - name: Test the plugin package
+        run: python3 -m unittest discover -s godot_plugin/tests -v
+
+      - name: Cache Godot
+        uses: actions/cache@v4
+        with:
+          path: ~/godot-bin
+          key: godot-${{ env.GODOT_VERSION }}
+
+      - name: Install Godot
+        run: |
+          if [ ! -x "$HOME/godot-bin/godot" ]; then
+            mkdir -p "$HOME/godot-bin"
+            curl -fsSL -o "$RUNNER_TEMP/godot.zip" \
+              "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+            unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot-unpacked"
+            cp "$RUNNER_TEMP/godot-unpacked/Godot_v${GODOT_VERSION}_linux.x86_64" "$HOME/godot-bin/godot"
+            chmod +x "$HOME/godot-bin/godot"
+          fi
+
+      - name: Set up a project with the plugin installed
+        run: |
+          mkdir -p "$RUNNER_TEMP/godot-project/addons"
+          cp -r godot_plugin/assetcraft_godot "$RUNNER_TEMP/godot-project/addons/"
+          cp -r godot_plugin/tests "$RUNNER_TEMP/godot-project/tests"
+          printf 'config_version=5\n\n[application]\n\nconfig/name="AssetCraft plugin test"\n' \
+            > "$RUNNER_TEMP/godot-project/project.godot"
+
+      - name: Check the plugin scripts parse
+        run: |
+          for script in exports.gd importer.gd plugin.gd; do
+            "$HOME/godot-bin/godot" --headless --path "$RUNNER_TEMP/godot-project" \
+              --check-only --script "res://addons/assetcraft_godot/$script"
+          done
+
+      - name: Run the plugin's discovery tests
+        env:
+          ASSETCRAFT_GODOT_FIXTURE: ${{ runner.temp }}/godot-fixture
+          XDG_DATA_HOME: ${{ runner.temp }}/xdg
+        run: >
+          "$HOME/godot-bin/godot" --headless --path "$RUNNER_TEMP/godot-project"
+          --script res://tests/test_exports.gd
+
+      - name: Run the plugin's import-copy tests
+        run: >
+          "$HOME/godot-bin/godot" --headless --path "$RUNNER_TEMP/godot-project"
+          --script res://tests/test_import_copy.gd

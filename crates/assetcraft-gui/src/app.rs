@@ -1925,7 +1925,8 @@ impl App {
             );
             ui.label(
                 egui::RichText::new(
-                    "Godot and Misty Engine exporters will appear here as they are built.",
+                    "Godot plugin: package from godot_plugin/ (see its README). \
+                     GUI export to Godot is next.",
                 )
                 .size(11.0)
                 .color(theme::FG_MUTED),

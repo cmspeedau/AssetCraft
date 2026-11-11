@@ -299,12 +299,12 @@ struct ExportArgs {
     #[arg(long)]
     no_mesh_import: bool,
 
-    /// Hand the generated script to Blender.
+    /// Run the exported scene in Blender or Godot, depending on `--dcc`.
     #[arg(long)]
     run: bool,
 
-    /// The Blender binary to run, or the one on PATH.
-    #[arg(long)]
+    /// The DCC binary to run, or the one on PATH.
+    #[arg(long, alias = "godot")]
     blender: Option<PathBuf>,
 }
 

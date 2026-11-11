@@ -7,7 +7,7 @@ use assetcraft_dcc_blender::manifest;
 
 use crate::detect;
 use crate::plan::ExportPlan;
-use crate::script::{material_script, scene, SCENE_NAME, SCRIPT_NAME};
+use crate::script::{material_script, scene_with_meshes, SCENE_NAME, SCRIPT_NAME};
 
 #[derive(Debug, Clone, Default)]
 pub struct ExportOptions {
@@ -62,11 +62,6 @@ pub fn export(
     let script = dir.join(SCRIPT_NAME);
     std::fs::write(&script, material_script(plan, options.import_meshes))?;
 
-    let scene_path = dir.join(SCENE_NAME);
-    std::fs::write(&scene_path, scene(plan))?;
-
-    let manifest_path = manifest::write(plan, options.import_meshes)?;
-
     // Make the export directory a tiny Godot project so res:// resolves and
     // the scene opens in the editor without an import step.
     let project_file = dir.join("project.godot");
@@ -77,16 +72,46 @@ pub fn export(
         )?;
     }
 
+    let binary = if options.run {
+        Some(options.godot.clone().or_else(detect::find).ok_or_else(|| {
+            Error::Other("Godot was not found; install it, put it on PATH, or pass its path".into())
+        })?)
+    } else {
+        None
+    };
+    if let Some(binary) = &binary {
+        let status = std::process::Command::new(binary)
+            .arg("--headless")
+            .arg("--editor")
+            .arg("--path")
+            .arg(&dir)
+            .arg("--import")
+            .status()?;
+        if !status.success() {
+            return Err(Error::Other(format!(
+                "Godot exited with {status} while importing {}",
+                dir.display()
+            )));
+        }
+    }
+
+    let scene_path = dir.join(SCENE_NAME);
+    let scene_meshes = if binary.is_some() {
+        imported_meshes(&dir, plan)
+    } else {
+        crate::script::preferred_meshes(plan)
+    };
+    std::fs::write(&scene_path, scene_with_meshes(&scene_meshes))?;
+
     let mut ran = false;
     let mut godot = None;
-    if options.run {
-        let binary = options.godot.clone().or_else(detect::find).ok_or_else(|| {
-            Error::Other("Godot was not found; install it, put it on PATH, or pass its path".into())
-        })?;
+    if let Some(binary) = binary {
         let status = std::process::Command::new(&binary)
             .arg("--headless")
             .arg("--path")
             .arg(&dir)
+            .arg("--quit-after")
+            .arg("2")
             .arg(&scene_path)
             .status()?;
         if !status.success() {
@@ -99,6 +124,9 @@ pub fn export(
         godot = Some(binary);
     }
 
+    // Write the completion marker last: discovery ignores partial exports.
+    let manifest_path = write_manifest(plan, options.import_meshes)?;
+
     Ok(ExportReport {
         dir,
         script,
@@ -110,6 +138,45 @@ pub fn export(
         ran,
         godot,
     })
+}
+
+/// Keep only imported mesh resources in the .tscn. Godot creates `.glb.import`
+/// metadata during the editor import scan; running a scene before that leaves
+/// unresolved PackedScene resources.
+fn imported_meshes(dir: &Path, plan: &ExportPlan) -> Vec<PathBuf> {
+    crate::script::preferred_meshes(plan)
+        .into_iter()
+        .filter(|mesh| {
+            dir.join(mesh)
+                .with_extension(format!(
+                    "{}.import",
+                    mesh.extension()
+                        .and_then(|extension| extension.to_str())
+                        .unwrap_or_default()
+                ))
+                .is_file()
+        })
+        .collect()
+}
+
+/// Use the Godot scene script in the shared manifest (the Blender writer's
+/// helper would advertise `assetcraft_export.py`, which is the wrong contract
+/// for Godot's reader).
+fn write_manifest(plan: &ExportPlan, import_meshes: bool) -> Result<PathBuf> {
+    // Keep the shared manifest's stable schema and map representation by
+    // serializing its rendered shape, then change only the target script name.
+    let mut value =
+        serde_json::to_value(manifest::render(plan, import_meshes)).map_err(|error| {
+            Error::Other(format!("could not serialise the export manifest: {error}"))
+        })?;
+    value["script"] = serde_json::Value::String(SCRIPT_NAME.to_owned());
+    value.as_object_mut().unwrap().sort_keys();
+    let text = serde_json::to_string_pretty(&value).map_err(|error| {
+        Error::Other(format!("could not serialise the export manifest: {error}"))
+    })?;
+    let path = plan.dir().join(manifest::MANIFEST_NAME);
+    std::fs::write(&path, text + "\n")?;
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -152,9 +219,43 @@ mod tests {
         .unwrap();
         assert!(report.script.is_file());
         assert!(report.scene.is_file());
+        assert!(std::fs::read_to_string(&report.scene)
+            .unwrap()
+            .contains("load_steps=3"));
         assert!(report.manifest.is_file());
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report.manifest).unwrap()).unwrap();
+        assert_eq!(manifest["script"], SCRIPT_NAME);
+        assert_eq!(manifest["version"], manifest::MANIFEST_VERSION);
         assert_eq!(report.mesh_kind, "gltf");
         assert_eq!(report.materials, 1);
+    }
+
+    #[test]
+    fn godot_export_does_not_announce_a_manifest_before_its_scene_exists() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("download");
+        let mesh = PathBuf::from("Content/Rock/SM_Rock.fbx");
+        std::fs::create_dir_all(source.join(&mesh).parent().unwrap()).unwrap();
+        std::fs::write(source.join(&mesh), b"fbx").unwrap();
+        let plan = plan(
+            temp.path().join("out"),
+            &AssetId::new("rock-1"),
+            "fbx",
+            &[mesh],
+        );
+        let result = export(
+            &plan,
+            &source,
+            &ExportOptions {
+                run: true,
+                godot: Some(temp.path().join("missing-godot")),
+                ..Default::default()
+            },
+        );
+        assert!(result.is_err());
+        assert!(!plan.dir().join("assetcraft_export.tscn").exists());
+        assert!(!plan.dir().join(manifest::MANIFEST_NAME).exists());
     }
 
     #[test]

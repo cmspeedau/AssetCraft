@@ -117,8 +117,7 @@ pub fn material_script(plan: &ExportPlan, import_meshes: bool) -> String {
 
     out.push_str("func _load_tex(path: String) -> Texture2D:\n");
     out.push_str("    if path == \"\":\n        return null\n");
-    out.push_str("    var abs_path = ProjectSettings.globalize_path(path)\n");
-    out.push_str("    var img = Image.load_from_file(abs_path)\n");
+    out.push_str("    var img = Image.load_from_file(ProjectSettings.globalize_path(path))\n");
     out.push_str("    if img == null:\n        return null\n");
     out.push_str("    var tex = ImageTexture.create_from_image(img)\n");
     out.push_str("    return tex\n\n");
@@ -165,12 +164,22 @@ pub fn material_script(plan: &ExportPlan, import_meshes: bool) -> String {
 }
 
 pub fn scene(plan: &ExportPlan) -> String {
-    let meshes = preferred_meshes(plan);
+    scene_with_meshes(&preferred_meshes(plan))
+}
+
+/// Generate the scene while instancing only meshes that the project has
+/// imported. When called before Godot's first import scan, unresolved resource
+/// paths stay out of the scene rather than creating invalid ext resources.
+pub fn scene_with_meshes(meshes: &[PathBuf]) -> String {
     let mut out = String::new();
-    out.push_str("[gd_scene load_steps=1 format=3]\n\n");
+    // Godot counts each external resource plus the scene itself in load_steps.
+    out.push_str(&format!(
+        "[gd_scene load_steps={} format=3]\n\n",
+        meshes.len() + 2
+    ));
     let mut idx = 1;
     let mut mesh_ids = Vec::new();
-    for mesh in &meshes {
+    for mesh in meshes {
         out.push_str(&format!(
             "[ext_resource type=\"PackedScene\" path=\"{}\" id=\"{}\"]\n",
             res_path(mesh),

@@ -15,6 +15,7 @@ assetcraft-auth = { version = "1.0.0", path = "crates/assetcraft-auth" }
 assetcraft-catalog = { version = "1.0.0", path = "crates/assetcraft-catalog" }
 assetcraft-core = { version = "1.0.0", path = "crates/assetcraft-core" }
 assetcraft-dcc-blender = { version = "1.0.0", path = "crates/assetcraft-dcc-blender" }
+assetcraft-dcc-godot = { version = "1.0.0", path = "crates/assetcraft-dcc-godot" }
 assetcraft-download = { version = "1.0.0", path = "crates/assetcraft-download" }
 assetcraft-library = { version = "1.0.0", path = "crates/assetcraft-library" }
 assetcraft-transfer = { version = "1.0.0", path = "crates/assetcraft-transfer" }

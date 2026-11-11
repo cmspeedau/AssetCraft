@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use assetcraft_core::{AssetId, Result};
+use assetcraft_core::{AssetId, DccExporter, Result};
 
 pub mod detect;
 pub mod exporter;
@@ -32,6 +32,50 @@ pub use manifest::{ExportManifest, MANIFEST_NAME, MANIFEST_VERSION};
 pub use material::{Binding, MaterialSpec, TextureMap};
 pub use plan::{plan, ExportPlan, PlannedFile};
 pub use script::material_script;
+
+impl DccExporter for BlenderAdapter {
+    type Plan = ExportPlan;
+    type Options = ExportOptions;
+    type Report = ExportReport;
+
+    fn name() -> &'static str {
+        "blender"
+    }
+
+    fn plan(
+        root: impl AsRef<Path>,
+        asset: &AssetId,
+        format_code: &str,
+        files: &[PathBuf],
+    ) -> Self::Plan {
+        plan(root, asset, format_code, files)
+    }
+
+    fn export(
+        plan: &Self::Plan,
+        source_root: &Path,
+        options: &Self::Options,
+    ) -> Result<Self::Report> {
+        export(plan, source_root, options)
+    }
+
+    fn material_script(plan: &Self::Plan, import_meshes: bool) -> String {
+        material_script(plan, import_meshes)
+    }
+
+    fn scene(_plan: &Self::Plan) -> Option<String> {
+        None
+    }
+
+    fn detect() -> Option<PathBuf> {
+        detect::find()
+    }
+}
+
+/// Zero-sized marker type implementing [`DccExporter`] for Blender, so the
+/// adapter can be named as a type (e.g. `BlenderAdapter: DccExporter`) without
+/// carrying any state. All the work lives in the associated free functions.
+pub struct BlenderAdapter;
 
 /// The directory an asset's files export into: `<root>/<asset id>/<format>`.
 ///

@@ -1,5 +1,12 @@
 # AssetCraft
 
+[![Build](https://img.shields.io/github/actions/workflow/status/cmspeedau/AssetCraft/ci.yml?branch=master&style=for-the-badge&logo=githubactions&logoColor=white&label=build)](https://github.com/cmspeedau/AssetCraft/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/Rust-1.85%2B-orange?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-5965f2?style=for-the-badge&logo=linux&logoColor=white)](#installation)
+[![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue?style=for-the-badge)](LICENSE-MIT)
+
+![AssetCraft asset browser displaying the purchased asset library](docs/screenshots/purchased-library.png)
+
 A cross-platform, open-source asset browser, downloader, and DCC exporter for
 Megascans / Fab PBR assets — written in Rust.
 

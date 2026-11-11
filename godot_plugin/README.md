@@ -13,8 +13,11 @@ for the reader/exporter contract.
 
 - Godot 4.4.1 or later in the Godot 4 series (the plugin uses Godot 4's editor
   and resource-filesystem APIs).
-- An AssetCraft Godot export. The plugin reads the app's default export library
-  path, or a custom CLI `--target` folder entered in the dock.
+- An AssetCraft Godot export. In the desktop app, select a downloaded asset,
+  choose **Godot** in the detail panel, and click **Export to Godot**. This writes
+  from the recorded local download without network access or launching Godot.
+  The plugin reads the app's default export library path, or a custom CLI
+  `--target` folder entered in the dock.
 
 ## Build and install
 

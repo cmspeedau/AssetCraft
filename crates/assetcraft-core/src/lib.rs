@@ -5,12 +5,14 @@
 //! the catalog, download, and DCC layers all build on.
 
 pub mod config;
+pub mod dcc;
 pub mod error;
 pub mod model;
 pub mod selection;
 pub mod structure;
 
 pub use config::{Config, Paths, Settings, VERSION};
+pub use dcc::DccExporter;
 pub use error::{status_error, Error, Result};
 pub use model::{
     AssetDetail, AssetFile, AssetFormat, AssetId, AssetImage, AssetSummary, Category,

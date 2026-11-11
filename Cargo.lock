@@ -345,6 +345,7 @@ dependencies = [
  "assetcraft-catalog",
  "assetcraft-core",
  "assetcraft-dcc-blender",
+ "assetcraft-dcc-godot",
  "assetcraft-download",
  "assetcraft-library",
  "assetcraft-transfer",
@@ -376,6 +377,18 @@ name = "assetcraft-dcc-blender"
 version = "1.0.0"
 dependencies = [
  "assetcraft-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "assetcraft-dcc-godot"
+version = "1.0.0"
+dependencies = [
+ "assetcraft-core",
+ "assetcraft-dcc-blender",
+ "image",
  "serde",
  "serde_json",
  "tempfile",

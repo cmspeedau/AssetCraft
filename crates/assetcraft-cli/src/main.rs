@@ -312,6 +312,7 @@ struct ExportArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum DccArg {
     Blender,
+    Godot,
 }
 
 /// Selection flags shared by `formats` and `resolve`.
@@ -1126,6 +1127,7 @@ fn download_output(
 fn export_asset(config: &Config, args: ExportArgs) -> Result<()> {
     let dcc = match args.dcc {
         DccArg::Blender => "blender",
+        DccArg::Godot => "godot",
     };
 
     let asset = AssetId::new(&args.asset_id);
@@ -1161,46 +1163,105 @@ fn export_asset(config: &Config, args: ExportArgs) -> Result<()> {
     }
 
     let plan = assetcraft_dcc_blender::plan(&args.target, &asset, &format, &files);
-    let options = assetcraft_dcc_blender::ExportOptions {
-        import_meshes: !args.no_mesh_import,
-        run: args.run,
-        blender: args.blender.clone(),
+    let is_godot = args.dcc == DccArg::Godot;
+
+    let (copied, materials, script_path, scene_path, ran, binary) = if is_godot {
+        let options = assetcraft_dcc_godot::ExportOptions {
+            import_meshes: !args.no_mesh_import,
+            run: args.run,
+            godot: args.blender.clone(),
+        };
+        let report = assetcraft_dcc_godot::export(&plan, &source, &options)
+            .context("could not export the asset")?;
+        (
+            report.copied,
+            report.materials,
+            report.script,
+            Some(report.scene),
+            report.ran,
+            report.godot,
+        )
+    } else {
+        let options = assetcraft_dcc_blender::ExportOptions {
+            import_meshes: !args.no_mesh_import,
+            run: args.run,
+            blender: args.blender.clone(),
+        };
+        let report = assetcraft_dcc_blender::export(&plan, &source, &options)
+            .context("could not export the asset")?;
+        (
+            report.copied,
+            report.materials,
+            report.script,
+            None,
+            report.ran,
+            report.blender,
+        )
     };
-    let report = assetcraft_dcc_blender::export(&plan, &source, &options)
-        .context("could not export the asset")?;
 
     println!(
         "Laid out {} files as {} material(s) for {dcc} in {}",
-        report.copied,
-        report.materials,
-        report.dir.display()
+        copied,
+        materials,
+        plan.dir().display()
     );
-    println!("Script: {}", report.script.display());
-    if report.ran {
-        match &report.blender {
-            Some(blender) => println!("Ran {}", blender.display()),
-            None => println!("Ran Blender"),
+    println!("Script: {}", script_path.display());
+    if let Some(scene) = &scene_path {
+        println!("Scene: {}", scene.display());
+    }
+    if ran {
+        match &binary {
+            Some(b) => println!("Ran {}", b.display()),
+            None => println!("Ran {}", if is_godot { "Godot" } else { "Blender" }),
         }
     } else {
-        // Name the Blender that was actually found: on a machine whose only
-        // Blender is Flatpak's, `blender` answers to nobody, and the copied
-        // line must be the command that runs — the exported
-        // `org.blender.Blender` wrapper takes the same arguments.
-        match assetcraft_dcc_blender::detect::find() {
-            Some(blender) => println!(
-                "Run it with: {} --background --python {}",
-                blender.display(),
-                report.script.display()
-            ),
-            None => println!(
-                "Run it with: blender --background --python {}",
-                report.script.display()
-            ),
+        let found = if is_godot {
+            assetcraft_dcc_godot::detect_find()
+        } else {
+            assetcraft_dcc_blender::detect::find()
+        };
+        match found {
+            Some(b) => {
+                if is_godot {
+                    println!(
+                        "Run it with: {} --headless --path {} {}",
+                        b.display(),
+                        plan.dir().display(),
+                        script_path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                    );
+                } else {
+                    println!(
+                        "Run it with: {} --background --python {}",
+                        b.display(),
+                        script_path.display()
+                    );
+                }
+            }
+            None => {
+                if is_godot {
+                    println!(
+                        "Run it with: godot --headless --path {} assetcraft_export.tscn",
+                        plan.dir().display()
+                    );
+                } else {
+                    println!(
+                        "Run it with: blender --background --python {}",
+                        script_path.display()
+                    );
+                }
+            }
         }
-        println!(
-            "   …or install the Blender addon (blender_addon/) and point it \
-             at this export's target folder."
-        );
+        if !is_godot {
+            println!(
+                "   …or install the Blender addon (blender_addon/) and point it \
+                 at this export's target folder."
+            );
+        } else {
+            println!("   …or open the export folder as a Godot project and run the scene.");
+        }
     }
     Ok(())
 }

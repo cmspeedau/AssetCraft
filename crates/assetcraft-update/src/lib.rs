@@ -292,25 +292,43 @@ pub fn apply(staged: &Path) -> Result<()> {
 fn apply_at(staged: &Path, exe: &Path) -> Result<()> {
     let tmp = sibling(exe, ".new");
     let old = sibling(exe, ".old");
-    std::fs::copy(staged, &tmp)?;
+    std::fs::copy(staged, &tmp)
+        .map_err(|error| install_io_error("stage the new executable", &tmp, error))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).map_err(
+            |error| install_io_error("make the staged executable runnable", &tmp, error),
+        )?;
     }
     if old.exists() {
-        std::fs::remove_file(&old)?;
+        std::fs::remove_file(&old)
+            .map_err(|error| install_io_error("remove the previous update backup", &old, error))?;
     }
-    std::fs::rename(exe, &old)?;
+    std::fs::rename(exe, &old)
+        .map_err(|error| install_io_error("move the installed executable aside", exe, error))?;
     if let Err(error) = std::fs::rename(&tmp, exe) {
         // Put back what was there; the update failed, the app did not.
         let _ = std::fs::rename(&old, exe);
-        return Err(Error::Io(error));
+        return Err(install_io_error("install the new executable", exe, error));
     }
     // The replaced image unlinks at once on Unix; on Windows it is the still
     // running process's own file and goes when it exits. Neither is a failure.
     let _ = std::fs::remove_file(&old);
     Ok(())
+}
+
+/// Attach the install step, affected path, and a useful recovery hint to a
+/// filesystem error. Packaged installs under `/usr`, `/opt`, or a mounted
+/// AppImage cannot be replaced by an unprivileged self-update.
+fn install_io_error(step: &str, path: &Path, error: std::io::Error) -> Error {
+    Error::Io(std::io::Error::new(
+        error.kind(),
+        format!(
+            "could not {step} at {}: {error}. The install location may be read-only; update it with your package manager or install AssetCraft in a user-writable location",
+            path.display()
+        ),
+    ))
 }
 
 /// `path` with `suffix` appended to its file name, in the same directory.
@@ -483,6 +501,21 @@ mod tests {
             format!("assetcraft-gui-{TARGET}{}", std::env::consts::EXE_SUFFIX)
         );
         assert_eq!(Product::Gui.bin_name(), "assetcraft-gui");
+    }
+
+    #[test]
+    fn install_errors_name_the_path_and_suggest_a_read_only_location_recovery() {
+        let exe = Path::new("/opt/AssetCraft/assetcraft-gui");
+        let error = install_io_error(
+            "install the new executable",
+            exe,
+            std::io::Error::from_raw_os_error(30),
+        );
+        let message = error.to_string();
+
+        assert!(message.contains(&exe.display().to_string()));
+        assert!(message.contains("install the new executable"));
+        assert!(message.contains("update it with your package manager"));
     }
 
     #[cfg(unix)]

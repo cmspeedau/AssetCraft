@@ -321,7 +321,57 @@ correctly-textured `StandardMaterial3D`/`ORMMaterial3D` in Godot.
 > headlessly against that fixture. The "does it look right in the viewport"
 > check remains manual, as it does for Blender.
 
-### M7 — Misty Engine Export → `v1.5.0`
+### M7 — MaterialCraft Export → `v1.2.0`
+
+Deliver two-way MaterialCraft interoperability. AssetCraft can send a downloaded
+Fab material to MaterialCraft as a portable `.mcmat`; MaterialCraft can also use
+its CLI to export a saved procedural material into an AssetCraft-compatible PBR
+bundle, which AssetCraft can import and route through its existing DCC exporters.
+This is an interchange path, not a MaterialCraft graph editor inside AssetCraft:
+preserve source maps and metadata where possible, and pin both formats/contracts
+to documented releases.
+
+- [ ] `assetcraft-dcc-materialcraft` adapter (or equivalent export module) on
+      the shared export contract, accepting the same offline source directory
+      and classified PBR maps as the existing DCC exporters.
+- [ ] Emit a valid `.mcmat` portable material that MaterialCraft can import or
+      open, with the source material name and supported PBR channels mapped
+      without silently dropping files; document any channel or metadata limits.
+- [ ] Pin the `.mcmat` package structure to a named MaterialCraft release and
+      add small, license-safe fixtures plus tests for package contents, map
+      references, and malformed or incomplete source materials.
+- [ ] Wire `assetcraft export --dcc materialcraft` into the CLI and expose the
+      export through the desktop app from the recorded local download, working
+      offline and without requiring a terminal.
+- [ ] Provide a clear error when the installed MaterialCraft version cannot
+      consume the emitted format, if runtime validation or hand-off is used.
+- [ ] Add a MaterialCraft CLI command to export a saved procedural material into
+      an AssetCraft interchange bundle: exported texture maps, material name,
+      channel/color-space metadata, and a versioned manifest. Support a chosen
+      output directory and resolution, with deterministic names and no network
+      requirement.
+- [ ] Define and document the interchange bundle contract in both projects;
+      AssetCraft imports the bundle as a local source so it can be organized,
+      previewed, and exported through the existing Blender/Godot pipeline.
+- [ ] Add round-trip/compatibility fixtures and tests in both projects, including
+      missing channels, unsupported nodes or inputs, malformed manifests, and
+      version mismatch behavior. MaterialCraft must report unsupported procedural
+      features rather than silently producing misleading maps.
+
+**DoD:** AssetCraft can export a downloaded material as a portable
+MaterialCraft-compatible `.mcmat`, and the MaterialCraft CLI can export a saved
+procedural material as a versioned AssetCraft-compatible bundle that AssetCraft
+can import and route through its existing DCC exporters. Both paths preserve the
+supported PBR channels, have documented limitations, and work offline.
+
+> **Reaching the DoD.** Package generation and validation should be testable
+> without a running editor. Keep both the `.mcmat` package and the CLI bundle
+> contract pinned to real releases, and verify fixtures in both directions. The
+> AssetCraft → MaterialCraft path exports existing material data; the
+> MaterialCraft → AssetCraft path bakes the procedural graph to PBR textures and
+> does not promise to reconstruct an editable node graph in AssetCraft.
+
+### M8 — Misty Engine Export → `v1.5.0`
 
 The third DCC, and the first whose editor is built like AssetCraft is:
 [Misty Engine](https://github.com/Aalzard/MistyEngine) is a Unity-style game
@@ -331,8 +381,8 @@ so the adapter stays MIT/Apache. Its asset pipeline is close enough to our
 layout that the exporter mostly translates rather than converts. The engine's
 youth is a fact of the plan: v0.1.0 shipped November 2026, the editor is
 Windows-only today, and its text asset formats may move underneath us — so
-every emitted format is pinned to a release, not assumed. The v1.2.0–v1.4.0
-gap is deliberate room for M5 packaging and M6 follow-on work.
+every emitted format is pinned to a release, not assumed. The v1.3.0–v1.4.0
+gap is deliberate room for follow-on work after M7 MaterialCraft Export.
 
 Misty differs from Blender and Godot in three ways that shape the work: it
 ingests **glTF and OBJ but no FBX**, so Fab's FBX-first formats need a
@@ -416,6 +466,6 @@ Ongoing, not tied to a single milestone:
 
 - Propose changes via an issue or pull request against this file.
 - Tell us which DCC you need next — that directly orders the DCC milestones
-  (Blender in M4, Godot planned in M6, Misty Engine planned in M7).
+  (Blender in M4, Godot in M6, Misty Engine planned in M8).
 - Milestone DoD checkboxes are the source of truth for "done"; keep them honest
   when closing work.

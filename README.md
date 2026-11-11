@@ -1,5 +1,12 @@
 # AssetCraft
 
+[![Build](https://img.shields.io/github/actions/workflow/status/cmspeedau/AssetCraft/ci.yml?branch=master&style=for-the-badge&logo=githubactions&logoColor=white&label=build)](https://github.com/cmspeedau/AssetCraft/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/Rust-1.85%2B-orange?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-5965f2?style=for-the-badge&logo=linux&logoColor=white)](#installation)
+[![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue?style=for-the-badge)](LICENSE-MIT)
+
+![AssetCraft asset browser displaying the purchased asset library](docs/screenshots/purchased-library.png)
+
 A cross-platform, open-source asset browser, downloader, and DCC exporter for
 Megascans / Fab PBR assets — written in Rust.
 
@@ -393,7 +400,8 @@ and `--quality` still outrank them.
 | Blender | CLI export works (`assetcraft export`): standard PBR layout + generated import script + machine-readable manifest. In-editor addon (`blender_addon/`) for one-click import from the viewport sidebar. The desktop app's local library drives the same export: one **Export to Blender** button, and the addon browses the app's export folder by default. Any packaging works — Flatpak (`org.blender.Blender`) and Snap included: detection finds the Flatpak export wrapper, and the addon resolves the app's export folder through the sandbox. |
 | Plain folder export | Available (the layout `export` writes) |
 | Godot | CLI export works (`assetcraft export --dcc godot`): the same PBR layout, a generated GDScript that builds `StandardMaterial3D`/`ORMMaterial3D` materials (AO/roughness/metallic packed into one ORM texture), and a `.tscn` scene that opens in Godot 4. glTF is preferred when the asset has it. In-editor plugin (`godot_plugin/`) for one-click import from a dock. Detection finds Godot on Linux (package, Snap, Flatpak), macOS, and Windows, and `--run` imports project files then runs the scene headlessly. |
-| Misty Engine | Planned (roadmap M7): glTF/OBJ meshes, Standard-shader material and prefab written into the project's `Assets/` tree with GUID-stable `.meta` sidecars. |
+| MaterialCraft | Planned for v1.2.0 (roadmap M7): export downloaded material maps as a portable, MaterialCraft-compatible `.mcmat`, preserving supported PBR channels. This exports existing maps; it does not generate a procedural node graph. |
+| Misty Engine | Planned (roadmap M8): glTF/OBJ meshes, Standard-shader material and prefab written into the project's `Assets/` tree with GUID-stable `.meta` sidecars. |
 | Unreal Engine | Under consideration |
 | Maya | Under consideration |
 | Houdini | Under consideration |

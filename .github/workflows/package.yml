@@ -118,7 +118,7 @@ jobs:
           # Join release.yml's release if it got there first; make our own
           # if it has not. Whichever workflow wins the race, both uploads
           # land on one release.
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" || true
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes || true
           gh release upload "$GITHUB_REF_NAME" \
             "assetcraft_${{ steps.version.outputs.version }}_amd64.deb" \
             "AssetCraft-${{ steps.version.outputs.version }}-x86_64.AppImage" \
@@ -188,7 +188,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" || true
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes || true
           v="${{ steps.version.outputs.version }}"
           gh release upload "$GITHUB_REF_NAME" \
             "AssetCraft-${v}-windows-x86_64.zip" \
@@ -282,7 +282,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           set -euo pipefail
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" || true
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes || true
           gh release upload "$GITHUB_REF_NAME" \
             "AssetCraft-${{ steps.version.outputs.version }}-universal.dmg" --clobber
         env:

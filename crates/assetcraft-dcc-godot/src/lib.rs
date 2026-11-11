@@ -18,7 +18,9 @@ pub use assetcraft_dcc_blender::{collect_files, export_dir, plan};
 pub use detect::find as detect_find;
 pub use exporter::{export, ExportOptions, ExportReport};
 pub use material::{orm_pack, GodotMaterial};
-pub use script::{material_script, preferred_meshes, scene, SCENE_NAME, SCRIPT_NAME};
+pub use script::{
+    material_script, preferred_meshes, scene, scene_with_meshes, SCENE_NAME, SCRIPT_NAME,
+};
 
 impl DccExporter for GodotAdapter {
     type Plan = ExportPlan;

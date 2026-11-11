@@ -279,34 +279,34 @@ occlusion-roughness-metallic into a **single ORM texture** rather than wiring
 separate maps. M6 reuses M4's layout and role classification and re-expresses
 them in Godot's terms.
 
-- [ ] `assetcraft-dcc-godot` adapter crate implementing the shared export trait,
+- [x] `assetcraft-dcc-godot` adapter crate implementing the shared export trait,
       reusing the M4 PBR layout (`meshes/`, `textures/`, `other/`) and the same
       name-based role classification rather than re-deriving either.
-- [ ] A generated, version-tolerant Godot script (GDScript) that builds a
+- [x] A generated, version-tolerant Godot script (GDScript) that builds a
       `StandardMaterial3D` (or `ORMMaterial3D`) per classified material — albedo,
       metallic, roughness, emission, normal — and applies it to imported meshes.
-- [ ] ORM packing: combine the AO, roughness, and metallic maps the classifier
+- [x] ORM packing: combine the AO, roughness, and metallic maps the classifier
       finds into the single occlusion/roughness/metallic texture Godot expects,
       falling back to `StandardMaterial3D` scalars when a map is absent.
-- [ ] Mesh path: prefer glTF (`.glb`/`.gltf`) as the lossless import Godot reads
+- [x] Mesh path: prefer glTF (`.glb`/`.gltf`) as the lossless import Godot reads
       without a reimport step; fall back to the FBX/OBJ a Fab format already
       provides, recorded so the caller sees which was used.
-- [ ] A scene export: a `.tscn` (text scene) referencing the material and meshes,
+- [x] A scene export: a `.tscn` (text scene) referencing the material and meshes,
       so `--run` yields a scene the user can open rather than only a script.
-- [ ] `assetcraft export --dcc godot` wired into the CLI; `export --run` hands
-      the generated script/scene to a detected Godot (headless `--headless
-      --script` for the script path), mirroring `export --run` for Blender.
-- [ ] Per-OS Godot path detection (Linux, macOS, Windows, plus `PATH`), reusing
+- [x] `assetcraft export --dcc godot` wired into the CLI; `export --run` hands
+      the generated project through Godot's asset import scan, then runs the
+      scene headlessly, mirroring `export --run` for Blender.
+- [x] Per-OS Godot path detection (Linux, macOS, Windows, plus `PATH`), reusing
       the M4 detection shape.
-- [ ] Programmatic API: `assetcraft_dcc_godot::{plan, export, material_script,
+- [x] Programmatic API: `assetcraft_dcc_godot::{plan, export, material_script,
       scene}` alongside the Blender equivalents, so the GUI (M5) drives both.
-- [ ] An installable in-editor Godot plugin (`editor_plugin`, GDScript) for
+- [x] An installable in-editor Godot plugin (`editor_plugin`, GDScript) for
       one-click import from inside the editor (the generated script is the
       bridge; the plugin is a follow-on, as with the Blender addon).
-- [ ] Meets the plugin contract with no new caveats: `export --dcc godot`
-      works with the network off from the source the library recorded, and the
-      GUI drives the whole path without a terminal — the same bar Blender is
-      held to (guiding principles; `docs/architecture.md`).
+- [ ] GUI drives `export --dcc godot` from the recorded local source and the
+      Integrations panel describes and links the Godot editor plugin, meeting
+      the same terminal-free bar as Blender (guiding principles;
+      `docs/architecture.md`).
 
 **DoD:** `assetcraft export <asset-id> --dcc godot` produces a scene-ready,
 correctly-textured `StandardMaterial3D`/`ORMMaterial3D` in Godot.
@@ -314,10 +314,11 @@ correctly-textured `StandardMaterial3D`/`ORMMaterial3D` in Godot.
 > **Reaching the DoD.** The layout and role classification are already pure and
 > tested in M4; the new surface is the GDScript/`.tscn` emission and ORM packing,
 > which are likewise pure and covered by tests inspecting the script and scene
-> they emit and the ORM channels they write. Godot itself is not in CI, so — as
-> with Blender — the "does it look right in the viewport" check, and the chunk
-> base derivation still to confirm before the bytes can be fetched, remain
-> manual validation steps.
+> they emit and the ORM channels they write. Godot 4.4.1 runs in CI for the
+> plugin's side of the contract: the Rust exporter writes a fixture, the plugin
+> scripts are parse-checked, and the manifest reader and discovery walk run
+> headlessly against that fixture. The "does it look right in the viewport"
+> check remains manual, as it does for Blender.
 
 ### M7 — Misty Engine Export → `v1.5.0`
 

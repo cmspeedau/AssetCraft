@@ -39,6 +39,7 @@ rather than a change to the engine.
 | `assetcraft-transfer` | lib | Asset id to files on disk: resolve, fetch chunks, reassemble, report contents | M2 |
 | `assetcraft-library` | lib | Local library index | M3 |
 | `assetcraft-dcc-blender` | adapter | Blender export | M4 |
+| `assetcraft-dcc-godot` | adapter | Godot export | M6 |
 | `assetcraft-update` | lib | Release feed, checksum verification, binary swap | M5 |
 | `assetcraft-cli` | bin | Headless front end | M1 |
 | `assetcraft-gui` | bin | egui desktop app | M5 |
@@ -592,8 +593,9 @@ the catalog client's job, reached through sign-in, the CLI, or the GUI's
 download queue. The pure-function shape of
 `assetcraft_dcc_blender::{plan, export, material_script}` — no client, no
 async, no network types in any signature — is what makes the rule checkable
-by reading the signature, and the shared export trait that lands with the
-second adapter (M6) carries the same constraint.
+by reading the signature, and the shared export trait
+(`assetcraft-core::dcc::DccExporter`, landed with the second adapter in M6)
+carries the same constraint through associated plan, options, and report types.
 
 The second halves into the GUI rule: every adapter exposes exactly that
 programmatic API so the desktop app can drive plan → layout → script →
@@ -749,6 +751,41 @@ the answer there, and both READMEs say so. `detect::find()` needed no flatpak
 special case: a Flatpak install exports a `org.blender.Blender` wrapper into
 the system and per-user `flatpak/exports/bin` directories, and running that
 path is the supported way to launch it, headless arguments included.
+
+### The Godot adapter re-renders the Blender layout, and shares its trait
+
+The second adapter (M6) is the test of whether the first one was a layout
+implementation or a Blender implementation. It answers: `assetcraft-dcc-godot`
+calls the same `plan`, `classify`, and channel dedupe the Blender adapter
+exported — the standardized `meshes/`/`textures/`/`other/` tree, material
+grouping by name, and the roughness/glossiness channel rule are read once and
+rendered twice. Only the *rendering* is Godot's: an `ORMMaterial3D` built on
+the occlusion/roughness/metallic texture packed from the AO (R), roughness (G),
+and metallic (B) maps, with the conventional 1.0/0.5/0.0 defaults when a source
+map is absent; a `StandardMaterial3D` with separate maps and scalars when
+nothing can be packed; a `.tscn` that instances the meshes and attaches the
+generated GDScript; and glTF preferred over FBX/OBJ when the asset carries it,
+recorded in the report so the caller sees which path was taken.
+
+What both adapters share is the trait, not the code: `DccExporter` in
+`assetcraft-core::dcc` names `name`, `plan`, `export`, `material_script`,
+`scene`, and `detect`, with associated `Plan`, `Options`, and `Report` types
+because a Blender run produces a Principled BSDF graph and a Godot run produces
+a scene and a packed texture. The signature still has no client, no async, and
+no network type in it — which is the whole point of putting it in core.
+
+The Godot plugin mirrors the Blender addon's division of labour rather than its
+language: `godot_plugin/assetcraft_godot/exports.gd` is the editor-free reader
+(manifest validation, the same `dev.AssetCraft.AssetCraft` export-root mirror,
+Flatpak's `/.flatpak-info` check, and a bounded walk that never descends into
+an export), and `plugin.gd` is the dock that copies a chosen export into
+`res://assetcraft_imports/` and opens its scene. The export directory ships its
+own `project.godot`, so it can also be opened directly to inspect the result.
+Godot 4.4.1 runs in CI for this much: the Rust exporter writes a fixture, the
+plugin scripts are parse-checked, and the reader is exercised headlessly
+against that fixture. The import dock waits for Godot's resource scan before
+opening the scene, and asks before replacing an existing import. Whether the
+viewport looks right is still a manual check, as it is for Blender.
 
 ### The artifact Fab delivers is the newest engine build, not the first listed
 
